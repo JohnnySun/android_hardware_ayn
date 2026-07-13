@@ -1,3 +1,8 @@
+cc_defaults {
+    name: "ayn_host_test_defaults",
+    cppflags: ["-fexceptions"],
+}
+
 cc_library_static {
     name: "libayn_rsinput_parser",
     srcs: ["src/rsinput_parser.cpp"],
@@ -31,6 +36,7 @@ cc_library_static {
 
 cc_test_host {
     name: "ayn_rsinput_lifecycle_test",
+    defaults: ["ayn_host_test_defaults"],
     srcs: ["tests/rsinput_lifecycle_test.cpp"],
     static_libs: ["libayn_rsinputd_core"],
     cflags: [
@@ -59,6 +65,7 @@ cc_binary {
 
 cc_test_host {
     name: "ayn_rsinput_parser_test",
+    defaults: ["ayn_host_test_defaults"],
     srcs: ["tests/rsinput_parser_test.cpp"],
     static_libs: ["libayn_rsinput_parser"],
     cflags: [
@@ -71,8 +78,12 @@ cc_test_host {
 
 cc_test_host {
     name: "ayn_rsinputd_policy_test",
+    defaults: ["ayn_host_test_defaults"],
     srcs: ["tests/rsinputd_policy_test.cpp"],
-    static_libs: ["libayn_rsinputd_core"],
+    static_libs: [
+        "libayn_rsinput_parser",
+        "libayn_rsinputd_core",
+    ],
     cflags: [
         "-Wall",
         "-Wextra",
@@ -99,6 +110,7 @@ cc_library_static {
 
 cc_test_host {
     name: "ayn_fan_service_test",
+    defaults: ["ayn_host_test_defaults"],
     srcs: ["tests/fan_service_test.cpp"],
     static_libs: ["libayn_fan_service_core"],
     cflags: [
