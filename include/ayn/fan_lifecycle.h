@@ -11,6 +11,7 @@ enum class ApplyResult {
   kApplied,
   kStopped,
   kFailedClosed,
+  kDisableUnconfirmed,
 };
 
 enum class SmartLoopResult {

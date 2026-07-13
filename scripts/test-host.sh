@@ -64,6 +64,18 @@ echo "CXX=$CXX"
   -o "$BUILD_DIR/fan_service_test"
 "$BUILD_DIR/fan_service_test"
 
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
+  "$ROOT/src/fan_policy.cpp" \
+  "$ROOT/src/fan_lifecycle.cpp" \
+  "$ROOT/src/fan_adapter.cpp" \
+  "$ROOT/tests/fan_adapter_test.cpp" \
+  -o "$BUILD_DIR/fan_adapter_test"
+"$BUILD_DIR/fan_adapter_test"
+
 if ! grep -qx '    disabled' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    oneshot' "$ROOT/rsinputd.rc"; then
   echo "error: rsinputd must remain disabled and oneshot" >&2

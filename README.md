@@ -16,9 +16,11 @@ separately.
 `odinfand` is a separate, disabled-by-default native fan-service scaffold for
 the Odin2 Mini. Its host-tested core contains the observed gpio5 PWM policy,
 strict product and sysfs path gates, snapshot validation, and fail-closed write
-ordering. The binary deliberately has no settings provider, no product start
-wiring, and no reachable sysfs I/O; integrating it requires a separate,
-safety-reviewed product change.
+ordering. A host-tested adapter layer now supplies strict typed settings and
+POSIX sysfs boundaries. The binary links the real file adapter, but its
+settings source deliberately returns unavailable, so no sysfs I/O is reachable
+until a separate, safety-reviewed product change supplies settings and start
+wiring.
 
 Run all host tests on a development host with:
 
@@ -29,7 +31,7 @@ Run all host tests on a development host with:
 The test entry point uses warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. The same tests are also exposed to Soong as
 `ayn_rsinput_parser_test`, `ayn_rsinputd_policy_test`, and
-`ayn_fan_service_test`.
+`ayn_fan_service_test`, and `ayn_fan_adapter_test`.
 
 ## License
 

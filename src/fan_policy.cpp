@@ -28,13 +28,19 @@ int SmartDutyForTemperature(int temperature_c) {
 
 }  // namespace
 
+const SysfsPaths& StockSysfsPaths() {
+  static const SysfsPaths paths = {kStatePath, kDutyPath, kSpeedPath};
+  return paths;
+}
+
 bool IsSupportedDevice(const std::string& product_device) {
   return product_device == kProductDevice;
 }
 
 bool AreExpectedSysfsPaths(const SysfsPaths& paths) {
-  return paths.state == kStatePath && paths.duty == kDutyPath &&
-         paths.speed == kSpeedPath;
+  const SysfsPaths& stock = StockSysfsPaths();
+  return paths.state == stock.state && paths.duty == stock.duty &&
+         paths.speed == stock.speed;
 }
 
 PolicyResult ResolveDuty(const FanSettings& settings, int temperature_c) {
@@ -60,6 +66,10 @@ PolicyResult ResolveDuty(const FanSettings& settings, int temperature_c) {
       return {true, stepped};
     }
     case FanMode::kSmart:
+      if (temperature_c < kMinimumTemperatureC ||
+          temperature_c > kMaximumTemperatureC) {
+        return {false, 0};
+      }
       return {true, SmartDutyForTemperature(temperature_c)};
   }
   return {false, 0};

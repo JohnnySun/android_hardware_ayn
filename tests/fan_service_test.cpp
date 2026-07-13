@@ -39,7 +39,9 @@ struct Harness {
   bool stop_requested = false;
   size_t stop_after_writes = 0;
   size_t fail_write_at = 0;
+  bool fail_all_writes = false;
   size_t read_calls = 0;
+  size_t fail_read_at = 0;
   std::map<std::string, std::string> files = {
       {kExpectedPaths.state, "0\n"},
       {kExpectedPaths.duty, "0\n"},
@@ -64,6 +66,9 @@ bool StopRequested(void* context) {
 bool ReadFile(void* context, const std::string& path, std::string* value) {
   auto* harness = static_cast<Harness*>(context);
   ++harness->read_calls;
+  if (harness->fail_read_at == harness->read_calls) {
+    return false;
+  }
   const auto found = harness->files.find(path);
   if (found == harness->files.end()) {
     return false;
@@ -76,9 +81,11 @@ bool WriteFile(void* context, const std::string& path,
                const std::string& value) {
   auto* harness = static_cast<Harness*>(context);
   harness->writes.emplace_back(path, value);
-  if (harness->fail_write_at == harness->writes.size()) {
+  if (harness->fail_all_writes ||
+      harness->fail_write_at == harness->writes.size()) {
     return false;
   }
+  harness->files[path] = value + "\n";
   if (harness->stop_after_writes == harness->writes.size()) {
     harness->stop_requested = true;
   }
@@ -125,6 +132,12 @@ void SmartFormulaBoundariesMatchObservedContract() {
   CHECK((Resolve(FanMode::kSmart, 0, 40) == PolicyResult{true, 8100}));
   CHECK((Resolve(FanMode::kSmart, 0, 84) == PolicyResult{true, 24710}));
   CHECK((Resolve(FanMode::kSmart, 0, 85) == PolicyResult{true, 25000}));
+  CHECK(!Resolve(FanMode::kSmart, 0,
+                 ayn::fan::kMinimumTemperatureC - 1)
+             .valid);
+  CHECK(!Resolve(FanMode::kSmart, 0,
+                 ayn::fan::kMaximumTemperatureC + 1)
+             .valid);
 }
 
 void FixedAndCustomModesResolveDeterministically() {
@@ -168,13 +181,20 @@ ApplyResult Apply(Harness* harness, int duty_ns,
       WriteFile, harness);
 }
 
-void MissingOrMalformedSysfsFailsBeforeAnyWrite() {
+void SnapshotFailuresNeverRiskAnUnknownEnabledState() {
   for (const std::string& path : {kExpectedPaths.state, kExpectedPaths.duty,
                                   kExpectedPaths.speed}) {
     Harness missing;
     missing.files.erase(path);
     CHECK(Apply(&missing, 25000) == ApplyResult::kFailedClosed);
-    CHECK(missing.writes.empty());
+    if (path == kExpectedPaths.state) {
+      const std::vector<std::pair<std::string, std::string>> expected = {
+          {kExpectedPaths.state, "0"}};
+      CHECK(missing.writes == expected);
+      CHECK(missing.files[kExpectedPaths.state] == "0\n");
+    } else {
+      CHECK(missing.writes.empty());
+    }
   }
 
   for (const auto& malformed :
@@ -186,8 +206,29 @@ void MissingOrMalformedSysfsFailsBeforeAnyWrite() {
     Harness harness;
     harness.files[malformed.first] = malformed.second;
     CHECK(Apply(&harness, 25000) == ApplyResult::kFailedClosed);
-    CHECK(harness.writes.empty());
+    if (malformed.first == kExpectedPaths.state) {
+      const std::vector<std::pair<std::string, std::string>> expected = {
+          {kExpectedPaths.state, "0"}};
+      CHECK(harness.writes == expected);
+      CHECK(harness.files[kExpectedPaths.state] == "0\n");
+    } else {
+      CHECK(harness.writes.empty());
+    }
   }
+
+  Harness enabled_missing_duty;
+  enabled_missing_duty.files[kExpectedPaths.state] = "1\n";
+  enabled_missing_duty.files.erase(kExpectedPaths.duty);
+  CHECK(Apply(&enabled_missing_duty, 25000) == ApplyResult::kFailedClosed);
+  CHECK(enabled_missing_duty.writes.back() ==
+        std::make_pair(kExpectedPaths.state, std::string("0")));
+  CHECK(enabled_missing_duty.files[kExpectedPaths.state] == "0\n");
+
+  Harness unknown_and_unwritable;
+  unknown_and_unwritable.files.erase(kExpectedPaths.state);
+  unknown_and_unwritable.fail_all_writes = true;
+  CHECK(Apply(&unknown_and_unwritable, 25000) ==
+        ApplyResult::kDisableUnconfirmed);
 }
 
 void UnsupportedIdentityOrPathCannotReachSysfs() {
@@ -238,13 +279,44 @@ void DisableTurnsStateOffBeforeClearingDuty() {
   CHECK(harness.writes == expected);
 }
 
-void WriteFailureStopsTheSequenceFailClosed() {
+void WriteFailureDisablesTheFanFailClosed() {
   for (size_t fail_write_at = 1; fail_write_at <= 4; ++fail_write_at) {
     Harness harness;
     harness.fail_write_at = fail_write_at;
     CHECK(Apply(&harness, 25000) == ApplyResult::kFailedClosed);
-    CHECK(harness.writes.size() == fail_write_at);
+    CHECK(harness.writes.size() == fail_write_at + 1);
+    CHECK(harness.writes.back() ==
+          std::make_pair(kExpectedPaths.state, std::string("0")));
+    CHECK(harness.files[kExpectedPaths.state] == "0\n");
   }
+}
+
+void FailedDisableCompensationIsNeverReportedFailClosed() {
+  Harness harness;
+  harness.files[kExpectedPaths.state] = "1\n";
+  harness.fail_all_writes = true;
+  CHECK(Apply(&harness, 25000) == ApplyResult::kDisableUnconfirmed);
+  CHECK(harness.writes.size() == 2);
+  CHECK(harness.writes.back() ==
+        std::make_pair(kExpectedPaths.state, std::string("0")));
+}
+
+void StateReadbackFailureDisablesTheFan() {
+  Harness disabling;
+  disabling.fail_read_at = 4;
+  CHECK(Apply(&disabling, 25000) == ApplyResult::kFailedClosed);
+  CHECK(disabling.writes.size() == 2);
+  CHECK(disabling.writes.back() ==
+        std::make_pair(kExpectedPaths.state, std::string("0")));
+  CHECK(disabling.files[kExpectedPaths.state] == "0\n");
+
+  Harness enabling;
+  enabling.fail_read_at = 5;
+  CHECK(Apply(&enabling, 25000) == ApplyResult::kFailedClosed);
+  CHECK(enabling.writes.size() == 5);
+  CHECK(enabling.writes.back() ==
+        std::make_pair(kExpectedPaths.state, std::string("0")));
+  CHECK(enabling.files[kExpectedPaths.state] == "0\n");
 }
 
 void StopBehaviorNeverEnablesAfterStop() {
@@ -256,9 +328,18 @@ void StopBehaviorNeverEnablesAfterStop() {
   Harness during_enable;
   during_enable.stop_after_writes = 3;
   CHECK(Apply(&during_enable, 25000) == ApplyResult::kStopped);
-  CHECK(during_enable.writes.size() == 3);
+  CHECK(during_enable.writes.size() == 4);
   CHECK(during_enable.writes.back() ==
-        std::make_pair(kExpectedPaths.duty, std::string("25000")));
+        std::make_pair(kExpectedPaths.state, std::string("0")));
+  CHECK(during_enable.files[kExpectedPaths.state] == "0\n");
+
+  Harness after_enable;
+  after_enable.stop_after_writes = 4;
+  CHECK(Apply(&after_enable, 25000) == ApplyResult::kStopped);
+  CHECK(after_enable.writes.size() == 5);
+  CHECK(after_enable.writes.back() ==
+        std::make_pair(kExpectedPaths.state, std::string("0")));
+  CHECK(after_enable.files[kExpectedPaths.state] == "0\n");
 }
 
 void SmartLoopPollsEveryFiveSecondsAndStopsPromptly() {
@@ -291,6 +372,16 @@ void SmartLoopFailsClosedOnMissingTemperature() {
         ayn::fan::SmartLoopResult::kStopped);
   CHECK(stopped.temperature_reads == 0);
   CHECK(stopped.applied_duties.empty());
+
+  SmartHarness out_of_range;
+  out_of_range.temperature_c = ayn::fan::kMaximumTemperatureC + 1;
+  CHECK(ayn::fan::RunSmartLoopUnlessStopped(
+            SmartStopRequested, &out_of_range, ReadTemperature, &out_of_range,
+            ApplySmartDuty, &out_of_range, SleepAndStop, &out_of_range) ==
+        ayn::fan::SmartLoopResult::kFailedClosed);
+  CHECK(out_of_range.temperature_reads == 1);
+  CHECK(out_of_range.applied_duties.empty());
+  CHECK(out_of_range.sleeps.empty());
 }
 
 }  // namespace
@@ -304,8 +395,8 @@ int main() {
       {"invalid settings fail closed", InvalidSettingsFailClosed},
       {"identity and paths must match exactly",
        IdentityAndPathsMustMatchExactly},
-      {"missing or malformed sysfs fails before any write",
-       MissingOrMalformedSysfsFailsBeforeAnyWrite},
+      {"snapshot failures never risk an unknown enabled state",
+       SnapshotFailuresNeverRiskAnUnknownEnabledState},
       {"unsupported identity or path cannot reach sysfs",
        UnsupportedIdentityOrPathCannotReachSysfs},
       {"invalid duty cannot reach sysfs", InvalidDutyCannotReachSysfs},
@@ -313,8 +404,12 @@ int main() {
        EnableWritesDisabledPeriodDutyThenEnabled},
       {"disable turns state off before clearing duty",
        DisableTurnsStateOffBeforeClearingDuty},
-      {"write failure stops the sequence fail closed",
-       WriteFailureStopsTheSequenceFailClosed},
+      {"write failure disables the fan fail closed",
+       WriteFailureDisablesTheFanFailClosed},
+      {"failed disable compensation is never reported fail closed",
+       FailedDisableCompensationIsNeverReportedFailClosed},
+      {"state readback failure disables the fan",
+       StateReadbackFailureDisablesTheFan},
       {"stop behavior never enables after stop",
        StopBehaviorNeverEnablesAfterStop},
       {"smart loop polls every five seconds and stops promptly",

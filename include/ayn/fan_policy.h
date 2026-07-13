@@ -12,6 +12,8 @@ constexpr int kCustomMinimumDutyNs = 25000;
 constexpr int kCustomMaximumDutyNs = 35000;
 constexpr int kCustomDutyStepNs = 100;
 constexpr int kSmartPollIntervalSeconds = 5;
+constexpr int kMinimumTemperatureC = -40;
+constexpr int kMaximumTemperatureC = 150;
 
 enum class FanMode {
   kDisabled,
@@ -41,6 +43,7 @@ struct SysfsPaths {
   std::string speed;
 };
 
+const SysfsPaths& StockSysfsPaths();
 bool IsSupportedDevice(const std::string& product_device);
 bool AreExpectedSysfsPaths(const SysfsPaths& paths);
 PolicyResult ResolveDuty(const FanSettings& settings, int temperature_c);
