@@ -1,0 +1,23 @@
+cc_library_static {
+    name: "libayn_rsinput_parser",
+    srcs: ["src/rsinput_parser.cpp"],
+    export_include_dirs: ["include"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+    vendor_available: true,
+}
+
+cc_test_host {
+    name: "ayn_rsinput_parser_test",
+    srcs: ["tests/rsinput_parser_test.cpp"],
+    static_libs: ["libayn_rsinput_parser"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+    test_suites: ["general-tests"],
+}
