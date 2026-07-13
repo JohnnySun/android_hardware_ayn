@@ -82,18 +82,6 @@ void Parser::Feed(const uint8_t* data, size_t size, StatusHandler handler,
         continue;
       }
 
-      const uint8_t command = buffer_[5];
-      if (command != kCmdStatus) {
-        ++stats_.unsupported_commands;
-        discard_prefix(1);
-        continue;
-      }
-      if (payload_size != kStatusPayloadSize) {
-        ++stats_.invalid_status_lengths;
-        discard_prefix(1);
-        continue;
-      }
-
       const size_t frame_size = kFrameOverhead + payload_size;
       if (buffered_size_ < frame_size) {
         return;
@@ -109,6 +97,18 @@ void Parser::Feed(const uint8_t* data, size_t size, StatusHandler handler,
         continue;
       }
 
+      const uint8_t command = buffer_[5];
+      if (command != kCmdStatus) {
+        ++stats_.unsupported_commands;
+        discard_prefix(frame_size);
+        continue;
+      }
+      if (payload_size != kStatusPayloadSize) {
+        ++stats_.invalid_status_lengths;
+        discard_prefix(frame_size);
+        continue;
+      }
+
       const uint8_t* payload = buffer_.data() + 8;
       Status status;
       status.sequence = buffer_[4];
@@ -120,11 +120,10 @@ void Parser::Feed(const uint8_t* data, size_t size, StatusHandler handler,
       status.right_x = ReadLeI16(payload + 10);
       status.right_y = ReadLeI16(payload + 12);
       ++stats_.accepted_status_frames;
+      discard_prefix(frame_size);
       if (handler != nullptr) {
         handler(context, status);
       }
-
-      discard_prefix(frame_size);
     }
   };
 

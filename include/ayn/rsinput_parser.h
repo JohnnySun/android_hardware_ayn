@@ -36,6 +36,8 @@ class Parser {
     size_t accepted_status_frames = 0;
   };
 
+  // Called synchronously after the accepted frame leaves the parser buffer.
+  // A handler may therefore feed more bytes into the same Parser instance.
   using StatusHandler = void (*)(void* context, const Status& status);
 
   void Feed(const uint8_t* data, size_t size, StatusHandler handler,

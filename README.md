@@ -2,17 +2,18 @@
 
 Clean-room Android hardware support shared by AYN handheld device ports.
 
-The current implementation is intentionally narrow: `libayn_rsinput_parser`
-parses passive RSInput controller status frames from an arbitrary byte stream.
-It handles fragmented and coalesced frames, rejects unknown commands and
-unexpected lengths, validates checksums, and recovers after malformed input.
+`rsinputd` is a disabled-by-default Android native service for the Odin2 Mini.
+It accepts valid RSInput status frames from the fixed controller UART and
+emits a standard uinput gamepad. The service rejects every other product
+identity before it opens either device node. Its only serial output is the two
+fixed RSInput initialization frames required before status reporting.
 
-This repository does not yet open a UART, initialize controller firmware,
-create an input device, or write to hardware. Those integration layers remain
-separate until their behavior and recovery boundaries are proven on stock
-firmware.
+The protocol encoding, device identity gate, and status-to-input mapping are
+host-tested. The Linux I/O layer is intentionally narrow and has not been
+executed on a device; a device product must opt in to the disabled init service
+separately.
 
-Run the parser tests on a development host with:
+Run all host tests on a development host with:
 
 ```sh
 ./scripts/test-host.sh
@@ -20,7 +21,7 @@ Run the parser tests on a development host with:
 
 The test entry point uses warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. The same tests are also exposed to Soong as
-`ayn_rsinput_parser_test`.
+`ayn_rsinput_parser_test` and `ayn_rsinputd_policy_test`.
 
 ## License
 

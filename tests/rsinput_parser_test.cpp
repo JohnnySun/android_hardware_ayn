@@ -164,11 +164,10 @@ void OversizeLengthThenRecovery() {
   CHECK(parser.stats().oversize_lengths == 1);
 }
 
-void InvalidStatusLengthHeaderDoesNotStallRecovery() {
-  std::vector<uint8_t> bytes(Parser::kMagic.begin(), Parser::kMagic.end());
-  bytes.push_back(10);
-  bytes.push_back(Parser::kCmdStatus);
-  AppendLe16(&bytes, static_cast<uint16_t>(Parser::kMaxPayloadSize));
+void InvalidStatusLengthFrameDoesNotStallRecovery() {
+  auto bytes = MakeFrame(
+      10, Parser::kCmdStatus,
+      std::vector<uint8_t>(Parser::kMaxPayloadSize, 0xCC));
   const auto good = MakeFrame(11, Parser::kCmdStatus, MakeStatusPayload());
   bytes.insert(bytes.end(), good.begin(), good.end());
 
@@ -181,11 +180,9 @@ void InvalidStatusLengthHeaderDoesNotStallRecovery() {
   CHECK(parser.stats().invalid_status_lengths == 1);
 }
 
-void UnsupportedCommandHeaderDoesNotStallRecovery() {
-  std::vector<uint8_t> bytes(Parser::kMagic.begin(), Parser::kMagic.end());
-  bytes.push_back(12);
-  bytes.push_back(0x7F);
-  AppendLe16(&bytes, static_cast<uint16_t>(Parser::kMaxPayloadSize));
+void UnsupportedCommandFrameDoesNotStallRecovery() {
+  auto bytes = MakeFrame(
+      12, 0x7F, std::vector<uint8_t>(Parser::kMaxPayloadSize, 0xCC));
   const auto good = MakeFrame(13, Parser::kCmdStatus, MakeStatusPayload());
   bytes.insert(bytes.end(), good.begin(), good.end());
 
@@ -196,6 +193,46 @@ void UnsupportedCommandHeaderDoesNotStallRecovery() {
   CHECK(statuses.size() == 1);
   CHECK(statuses.front().sequence == 13);
   CHECK(parser.stats().unsupported_commands == 1);
+}
+
+void UnsupportedCommandFrameDoesNotParseEmbeddedStatus() {
+  const auto embedded =
+      MakeFrame(0x80, Parser::kCmdStatus, MakeStatusPayload());
+  auto bytes = MakeFrame(0x81, 0x7F, embedded);
+  const auto following =
+      MakeFrame(0x82, Parser::kCmdStatus, MakeStatusPayload());
+  bytes.insert(bytes.end(), following.begin(), following.end());
+
+  Parser parser;
+  std::vector<Status> statuses;
+  Feed(&parser, bytes.data(), bytes.size(), &statuses);
+
+  CHECK(!statuses.empty());
+  CHECK(statuses.front().sequence == 0x82);
+  CHECK(statuses.size() == 1);
+  CHECK(parser.stats().unsupported_commands == 1);
+  CHECK(parser.stats().accepted_status_frames == 1);
+  CHECK(parser.buffered_bytes() == 0);
+}
+
+void InvalidStatusLengthFrameDoesNotParseEmbeddedStatus() {
+  const auto embedded =
+      MakeFrame(0x83, Parser::kCmdStatus, MakeStatusPayload());
+  auto bytes = MakeFrame(0x84, Parser::kCmdStatus, embedded);
+  const auto following =
+      MakeFrame(0x85, Parser::kCmdStatus, MakeStatusPayload());
+  bytes.insert(bytes.end(), following.begin(), following.end());
+
+  Parser parser;
+  std::vector<Status> statuses;
+  Feed(&parser, bytes.data(), bytes.size(), &statuses);
+
+  CHECK(!statuses.empty());
+  CHECK(statuses.front().sequence == 0x85);
+  CHECK(statuses.size() == 1);
+  CHECK(parser.stats().invalid_status_lengths == 1);
+  CHECK(parser.stats().accepted_status_frames == 1);
+  CHECK(parser.buffered_bytes() == 0);
 }
 
 void ReconnectResetDropsTruncation() {
@@ -255,6 +292,43 @@ void LargeNoiseInputRemainsBounded() {
   CHECK(parser.buffered_bytes() <= Parser::kMaxFrameSize);
 }
 
+struct ReentrantContext {
+  Parser* parser;
+  const std::vector<uint8_t>* next_frame;
+  std::vector<Status>* statuses;
+  bool fed_next_frame = false;
+};
+
+void CollectAndFeedNextFrame(void* opaque, const Status& status) {
+  auto* context = static_cast<ReentrantContext*>(opaque);
+  context->statuses->push_back(status);
+  if (context->fed_next_frame) {
+    return;
+  }
+
+  context->fed_next_frame = true;
+  context->parser->Feed(context->next_frame->data(),
+                        context->next_frame->size(), CollectAndFeedNextFrame,
+                        context);
+}
+
+void HandlerCanReenterParserWithoutRepeatingAcceptedFrame() {
+  const auto first = MakeFrame(0x70, Parser::kCmdStatus, MakeStatusPayload());
+  const auto second = MakeFrame(0x71, Parser::kCmdStatus, MakeStatusPayload());
+  Parser parser;
+  std::vector<Status> statuses;
+  ReentrantContext context{&parser, &second, &statuses};
+
+  parser.Feed(first.data(), first.size(), CollectAndFeedNextFrame, &context);
+
+  CHECK(statuses.size() >= 2);
+  CHECK(statuses[0].sequence == 0x70);
+  CHECK(statuses[1].sequence == 0x71);
+  CHECK(statuses.size() == 2);
+  CHECK(parser.stats().accepted_status_frames == 2);
+  CHECK(parser.buffered_bytes() == 0);
+}
+
 }  // namespace
 
 int main() {
@@ -266,14 +340,19 @@ int main() {
       {"bad magic then recovery", BadMagicThenRecovery},
       {"bad checksum then recovery", BadChecksumThenRecovery},
       {"oversize length then recovery", OversizeLengthThenRecovery},
-      {"invalid status length header does not stall recovery",
-       InvalidStatusLengthHeaderDoesNotStallRecovery},
-      {"unsupported command header does not stall recovery",
-       UnsupportedCommandHeaderDoesNotStallRecovery},
+      {"invalid status length frame does not stall recovery",
+       InvalidStatusLengthFrameDoesNotStallRecovery},
+      {"unsupported command frame does not stall recovery",
+       UnsupportedCommandFrameDoesNotStallRecovery},
+      {"invalid status length frame does not parse embedded status",
+       InvalidStatusLengthFrameDoesNotParseEmbeddedStatus},
+      {"unsupported command frame does not parse embedded status",
+       UnsupportedCommandFrameDoesNotParseEmbeddedStatus},
       {"reconnect reset drops truncation", ReconnectResetDropsTruncation},
       {"status length is fail closed", StatusLengthIsFailClosed},
       {"unknown command is fail closed", UnknownCommandIsFailClosed},
       {"large noise input remains bounded", LargeNoiseInputRemainsBounded},
+      {"handler reentry", HandlerCanReenterParserWithoutRepeatingAcceptedFrame},
   };
 
   size_t passed = 0;

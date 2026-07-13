@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+
+service rsinputd /system/bin/rsinputd
+    class late_start
+    user system
+    group system input uhid
+    disabled
+    oneshot
