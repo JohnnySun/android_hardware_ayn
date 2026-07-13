@@ -41,6 +41,18 @@ echo "CXX=$CXX"
   -o "$BUILD_DIR/rsinputd_policy_test"
 "$BUILD_DIR/rsinputd_policy_test"
 
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
+  "$ROOT/src/rsinput_parser.cpp" \
+  "$ROOT/src/rsinput_protocol.cpp" \
+  "$ROOT/src/rsinput_lifecycle.cpp" \
+  "$ROOT/tests/rsinput_lifecycle_test.cpp" \
+  -o "$BUILD_DIR/rsinput_lifecycle_test"
+"$BUILD_DIR/rsinput_lifecycle_test"
+
 if ! grep -qx '    disabled' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    oneshot' "$ROOT/rsinputd.rc"; then
   echo "error: rsinputd must remain disabled and oneshot" >&2

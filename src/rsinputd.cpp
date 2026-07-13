@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ayn/rsinput_mapping.h"
+#include "ayn/rsinput_lifecycle.h"
 #include "ayn/rsinput_parser.h"
-#include "ayn/rsinput_protocol.h"
 
 #include <android-base/logging.h>
 #include <android-base/properties.h>
@@ -22,7 +22,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
-#include <vector>
 
 namespace {
 
@@ -231,14 +230,16 @@ bool CreateUinputGamepad(int fd) {
   return true;
 }
 
-bool SendInitializationFrames(int uart_fd) {
-  const auto frames = ayn::rsinput::BuildInitializationFrames();
-  for (const std::vector<uint8_t>& frame : frames) {
-    if (!WriteAll(uart_fd, frame.data(), frame.size())) {
-      return false;
-    }
-  }
-  return true;
+bool StopWasRequested(void*) {
+  return g_stop_requested != 0;
+}
+
+int OpenRuntimeUart(void*) {
+  return OpenConfiguredUart();
+}
+
+bool WriteInitializationFrame(void* context, const uint8_t* data, size_t size) {
+  return WriteAll(*static_cast<int*>(context), data, size);
 }
 
 struct EventEmitter {
@@ -293,8 +294,15 @@ int RunSupportedDevice(void*) {
     return EXIT_FAILURE;
   }
 
-  FileDescriptor uart(OpenConfiguredUart());
-  if (!uart.valid()) {
+  int uart_fd = -1;
+  const ayn::rsinput::StartupResult open_result =
+      ayn::rsinput::OpenUartUnlessStopped(StopWasRequested, nullptr,
+                                         OpenRuntimeUart, nullptr, &uart_fd);
+  FileDescriptor uart(uart_fd);
+  if (open_result == ayn::rsinput::StartupResult::kStopped) {
+    return EXIT_SUCCESS;
+  }
+  if (open_result == ayn::rsinput::StartupResult::kFailed) {
     return EXIT_FAILURE;
   }
   FileDescriptor uinput(open(kUinputPath, O_WRONLY | O_CLOEXEC));
@@ -308,7 +316,13 @@ int RunSupportedDevice(void*) {
   UinputDevice gamepad(uinput.get());
   gamepad.MarkCreated();
 
-  if (!SendInitializationFrames(uart.get())) {
+  const ayn::rsinput::StartupResult initialization_result =
+      ayn::rsinput::SendInitializationFramesUnlessStopped(
+          StopWasRequested, nullptr, WriteInitializationFrame, &uart_fd);
+  if (initialization_result == ayn::rsinput::StartupResult::kStopped) {
+    return EXIT_SUCCESS;
+  }
+  if (initialization_result == ayn::rsinput::StartupResult::kFailed) {
     return EXIT_FAILURE;
   }
   return ForwardStatusFrames(uart.get(), uinput.get());
