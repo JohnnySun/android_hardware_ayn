@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
+on late-init && property:ro.product.device=odin2_mini
+    start rsinputd
+
 service rsinputd /system/bin/rsinputd
     class late_start
     user system

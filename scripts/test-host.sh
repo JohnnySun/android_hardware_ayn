@@ -52,3 +52,9 @@ if ! grep -qx 'service rsinputd /system/bin/rsinputd' "$ROOT/rsinputd.rc" ||
   echo "error: system-only bring-up must install rsinputd in system" >&2
   exit 1
 fi
+
+if ! grep -qx 'on late-init && property:ro.product.device=odin2_mini' "$ROOT/rsinputd.rc" ||
+   ! grep -qx '    start rsinputd' "$ROOT/rsinputd.rc"; then
+  echo "error: rsinputd must start once before Setup Wizard on Odin2 Mini" >&2
+  exit 1
+fi
