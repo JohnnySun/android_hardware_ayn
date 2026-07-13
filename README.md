@@ -13,6 +13,13 @@ host-tested. The Linux I/O layer is intentionally narrow and has not been
 executed on a device; a device product must opt in to the disabled init service
 separately.
 
+`odinfand` is a separate, disabled-by-default native fan-service scaffold for
+the Odin2 Mini. Its host-tested core contains the observed gpio5 PWM policy,
+strict product and sysfs path gates, snapshot validation, and fail-closed write
+ordering. The binary deliberately has no settings provider, no product start
+wiring, and no reachable sysfs I/O; integrating it requires a separate,
+safety-reviewed product change.
+
 Run all host tests on a development host with:
 
 ```sh
@@ -21,7 +28,8 @@ Run all host tests on a development host with:
 
 The test entry point uses warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. The same tests are also exposed to Soong as
-`ayn_rsinput_parser_test` and `ayn_rsinputd_policy_test`.
+`ayn_rsinput_parser_test`, `ayn_rsinputd_policy_test`, and
+`ayn_fan_service_test`.
 
 ## License
 

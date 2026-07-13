@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+
+service odinfand /system/bin/odinfand
+    class late_start
+    user system
+    group system
+    disabled
+    oneshot

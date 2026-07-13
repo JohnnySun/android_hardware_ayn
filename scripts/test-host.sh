@@ -53,6 +53,17 @@ echo "CXX=$CXX"
   -o "$BUILD_DIR/rsinput_lifecycle_test"
 "$BUILD_DIR/rsinput_lifecycle_test"
 
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
+  "$ROOT/src/fan_policy.cpp" \
+  "$ROOT/src/fan_lifecycle.cpp" \
+  "$ROOT/tests/fan_service_test.cpp" \
+  -o "$BUILD_DIR/fan_service_test"
+"$BUILD_DIR/fan_service_test"
+
 if ! grep -qx '    disabled' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    oneshot' "$ROOT/rsinputd.rc"; then
   echo "error: rsinputd must remain disabled and oneshot" >&2
@@ -68,5 +79,17 @@ fi
 if ! grep -qx 'on late-init && property:ro.product.device=odin2_mini' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    start rsinputd' "$ROOT/rsinputd.rc"; then
   echo "error: rsinputd must start once before Setup Wizard on Odin2 Mini" >&2
+  exit 1
+fi
+
+if ! grep -qx 'service odinfand /system/bin/odinfand' "$ROOT/odinfand.rc" ||
+   ! grep -qx '    disabled' "$ROOT/odinfand.rc" ||
+   ! grep -qx '    oneshot' "$ROOT/odinfand.rc"; then
+  echo "error: odinfand must remain a disabled system service" >&2
+  exit 1
+fi
+
+if grep -Eq '^[[:space:]]*on |^[[:space:]]*start odinfand' "$ROOT/odinfand.rc"; then
+  echo "error: odinfand must not have product or automatic start wiring" >&2
   exit 1
 fi
