@@ -157,7 +157,7 @@ fi
 if ! grep -q 'name: "com.ayn.fan"' "$ROOT/Android.bp" ||
    ! grep -q 'local_include_dir: "aidl"' "$ROOT/Android.bp" ||
    ! grep -q 'unstable: true' "$ROOT/Android.bp" ||
-   ! grep -qx '@RequiresNoPermission' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
+   ! grep -A8 'java: {' "$ROOT/Android.bp" | grep -q 'enabled: true' ||
    ! grep -qx 'interface IOdinFan {' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
    ! grep -qx '    FanResponse getStatus();' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
    ! grep -qx '    FanResponse setMode(int mode, in IBinder owner);' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl"; then
