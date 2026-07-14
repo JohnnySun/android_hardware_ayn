@@ -68,6 +68,19 @@ echo "CXX=$CXX"
   -std=c++17 \
   -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -pthread \
+  -I"$ROOT/include" \
+  "$ROOT/src/fan_policy.cpp" \
+  "$ROOT/src/fan_lifecycle.cpp" \
+  "$ROOT/src/fan_service.cpp" \
+  "$ROOT/tests/fan_transaction_test.cpp" \
+  -o "$BUILD_DIR/fan_transaction_test"
+"$BUILD_DIR/fan_transaction_test"
+
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I"$ROOT/include" \
   "$ROOT/src/fan_policy.cpp" \
   "$ROOT/src/fan_lifecycle.cpp" \
@@ -131,12 +144,35 @@ fi
 
 if ! grep -qx 'service odinfand /system/bin/odinfand' "$ROOT/odinfand.rc" ||
    ! grep -qx '    disabled' "$ROOT/odinfand.rc" ||
-   ! grep -qx '    oneshot' "$ROOT/odinfand.rc"; then
-  echo "error: odinfand must remain a disabled system service" >&2
+   grep -qx '    oneshot' "$ROOT/odinfand.rc"; then
+  echo "error: odinfand must be a persistent disabled system service" >&2
   exit 1
 fi
 
 if grep -Eq '^[[:space:]]*on |^[[:space:]]*start odinfand' "$ROOT/odinfand.rc"; then
-  echo "error: odinfand must not have product or automatic start wiring" >&2
+  echo "error: odinfand must not start before product and SELinux wiring are proven" >&2
+  exit 1
+fi
+
+if ! grep -q 'name: "com.ayn.fan"' "$ROOT/Android.bp" ||
+   ! grep -q 'local_include_dir: "aidl"' "$ROOT/Android.bp" ||
+   ! grep -q 'unstable: true' "$ROOT/Android.bp" ||
+   ! grep -qx '@RequiresNoPermission' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
+   ! grep -qx 'interface IOdinFan {' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
+   ! grep -qx '    FanResponse getStatus();' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
+   ! grep -qx '    FanResponse setMode(int mode, in IBinder owner);' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl"; then
+  echo "error: private unstable IOdinFan AIDL contract is incomplete" >&2
+  exit 1
+fi
+
+if grep -Eq 'String.*path|int.*(duty|period)' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl"; then
+  echo "error: IOdinFan callers must not supply paths, duty, or period" >&2
+  exit 1
+fi
+
+if ! grep -q 'com.ayn.fan.IOdinFan/default' "$ROOT/src/odinfand.cpp" ||
+   ! grep -q 'AServiceManager_addService' "$ROOT/src/odinfand.cpp" ||
+   grep -Eq 'SetProperty|socket\(|AF_UNIX' "$ROOT/src/odinfand.cpp"; then
+  echo "error: odinfand must register Binder directly without property or UDS control" >&2
   exit 1
 fi

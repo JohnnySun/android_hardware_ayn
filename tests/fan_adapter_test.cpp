@@ -33,6 +33,7 @@ using ayn::fan::SysfsPaths;
 const SysfsPaths kExpectedPaths = {
     "/sys/class/gpio5_pwm2/state",
     "/sys/class/gpio5_pwm2/duty",
+    "/sys/class/gpio5_pwm2/period",
     "/sys/class/gpio5_pwm2/speed",
 };
 
@@ -49,7 +50,8 @@ struct Harness {
   std::map<std::string, std::string> files = {
       {kExpectedPaths.state, "0\n"},
       {kExpectedPaths.duty, "0\n"},
-      {kExpectedPaths.speed, "50000\n"},
+      {kExpectedPaths.period, "50000\n"},
+      {kExpectedPaths.speed, "0\n"},
   };
   std::vector<std::pair<std::string, std::string>> writes;
 };

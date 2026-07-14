@@ -6,6 +6,10 @@
 namespace ayn::fan {
 
 constexpr int kPwmPeriodNs = 50000;
+constexpr int kPwmPeriod = 50000;
+constexpr int kOffDuty = 10000;
+constexpr int kQuietDuty = 5000;
+constexpr int kSportDuty = 25000;
 constexpr int kQuietDutyNs = 5000;
 constexpr int kSportDutyNs = 25000;
 constexpr int kCustomMinimumDutyNs = 25000;
@@ -16,7 +20,8 @@ constexpr int kMinimumTemperatureC = -40;
 constexpr int kMaximumTemperatureC = 150;
 
 enum class FanMode {
-  kDisabled,
+  kOff,
+  kDisabled = kOff,
   kQuiet,
   kSport,
   kCustom,
@@ -40,6 +45,7 @@ struct PolicyResult {
 struct SysfsPaths {
   std::string state;
   std::string duty;
+  std::string period;
   std::string speed;
 };
 

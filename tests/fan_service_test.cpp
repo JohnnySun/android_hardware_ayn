@@ -32,6 +32,7 @@ using ayn::fan::SysfsPaths;
 const SysfsPaths kExpectedPaths = {
     "/sys/class/gpio5_pwm2/state",
     "/sys/class/gpio5_pwm2/duty",
+    "/sys/class/gpio5_pwm2/period",
     "/sys/class/gpio5_pwm2/speed",
 };
 
@@ -45,7 +46,8 @@ struct Harness {
   std::map<std::string, std::string> files = {
       {kExpectedPaths.state, "0\n"},
       {kExpectedPaths.duty, "0\n"},
-      {kExpectedPaths.speed, "50000\n"},
+      {kExpectedPaths.period, "50000\n"},
+      {kExpectedPaths.speed, "0\n"},
   };
   std::vector<std::pair<std::string, std::string>> writes;
 };
@@ -183,6 +185,7 @@ ApplyResult Apply(Harness* harness, int duty_ns,
 
 void SnapshotFailuresNeverRiskAnUnknownEnabledState() {
   for (const std::string& path : {kExpectedPaths.state, kExpectedPaths.duty,
+                                  kExpectedPaths.period,
                                   kExpectedPaths.speed}) {
     Harness missing;
     missing.files.erase(path);
@@ -201,7 +204,8 @@ void SnapshotFailuresNeverRiskAnUnknownEnabledState() {
        std::vector<std::pair<std::string, std::string>>{
            {kExpectedPaths.state, "enabled\n"},
            {kExpectedPaths.duty, "12x\n"},
-           {kExpectedPaths.speed, "0\n"},
+           {kExpectedPaths.period, "0\n"},
+           {kExpectedPaths.speed, "stopped\n"},
        }) {
     Harness harness;
     harness.files[malformed.first] = malformed.second;
@@ -260,7 +264,7 @@ void EnableWritesDisabledPeriodDutyThenEnabled() {
   CHECK(Apply(&harness, 25000) == ApplyResult::kApplied);
   const std::vector<std::pair<std::string, std::string>> expected = {
       {kExpectedPaths.state, "0"},
-      {kExpectedPaths.speed, "50000"},
+      {kExpectedPaths.period, "50000"},
       {kExpectedPaths.duty, "25000"},
       {kExpectedPaths.state, "1"},
   };
@@ -303,7 +307,7 @@ void FailedDisableCompensationIsNeverReportedFailClosed() {
 
 void StateReadbackFailureDisablesTheFan() {
   Harness disabling;
-  disabling.fail_read_at = 4;
+  disabling.fail_read_at = 5;
   CHECK(Apply(&disabling, 25000) == ApplyResult::kFailedClosed);
   CHECK(disabling.writes.size() == 2);
   CHECK(disabling.writes.back() ==
@@ -311,7 +315,7 @@ void StateReadbackFailureDisablesTheFan() {
   CHECK(disabling.files[kExpectedPaths.state] == "0\n");
 
   Harness enabling;
-  enabling.fail_read_at = 5;
+  enabling.fail_read_at = 6;
   CHECK(Apply(&enabling, 25000) == ApplyResult::kFailedClosed);
   CHECK(enabling.writes.size() == 5);
   CHECK(enabling.writes.back() ==

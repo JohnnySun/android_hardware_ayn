@@ -5,4 +5,3 @@ service odinfand /system/bin/odinfand
     user system
     group system
     disabled
-    oneshot

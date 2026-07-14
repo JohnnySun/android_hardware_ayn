@@ -13,14 +13,13 @@ host-tested. The Linux I/O layer is intentionally narrow and has not been
 executed on a device; a device product must opt in to the disabled init service
 separately.
 
-`odinfand` is a separate, disabled-by-default native fan-service scaffold for
-the Odin2 Mini. Its host-tested core contains the observed gpio5 PWM policy,
-strict product and sysfs path gates, snapshot validation, and fail-closed write
-ordering. A host-tested adapter layer now supplies strict typed settings and
-POSIX sysfs boundaries. The binary links the real file adapter, but its
-settings source deliberately returns unavailable, so no sysfs I/O is reachable
-until a separate, safety-reviewed product change supplies settings and start
-wiring.
+`odinfand` is a disabled-by-default native Binder service for the Odin2 Mini.
+Its private unstable `com.ayn.fan.IOdinFan/default` interface exposes only Off,
+Quiet, and Sport. The host-tested core owns the exact gpio5 PWM paths, serializes
+transactions, keeps PWM period separate from tach, disables before every mode
+change, and attempts a confirmed Off state on every gated transaction failure.
+The init service remains disabled with no start trigger because device product,
+SELinux, and service-context wiring are not included in this repository phase.
 
 `libayn_fan_status_core` is an independent, read-only Q9 status reader. It
 requires both the exact `odin2_mini` product identity and the stock `Q9` retro
@@ -37,7 +36,8 @@ Run all host tests on a development host with:
 The test entry point uses warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. The same tests are also exposed to Soong as
 `ayn_rsinput_parser_test`, `ayn_rsinputd_policy_test`, and
-`ayn_fan_service_test`, `ayn_fan_adapter_test`, and `ayn_fan_status_test`.
+`ayn_fan_service_test`, `ayn_fan_transaction_test`, `ayn_fan_adapter_test`, and
+`ayn_fan_status_test`.
 
 ## License
 

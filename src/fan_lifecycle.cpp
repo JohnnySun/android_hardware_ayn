@@ -79,7 +79,7 @@ ApplyResult ApplyDutyUnlessStopped(
     return ApplyResult::kStopped;
   }
 
-  std::array<int, 3> snapshot{};
+  std::array<int, 4> snapshot{};
   int observed_state = -1;
   const auto fail_closed_from_observed_state = [&]() {
     if (observed_state == 0) {
@@ -90,9 +90,10 @@ ApplyResult ApplyDutyUnlessStopped(
                ? ApplyResult::kFailedClosed
                : ApplyResult::kDisableUnconfirmed;
   };
-  const std::array<std::string, 3> snapshot_paths = {
+  const std::array<std::string, 4> snapshot_paths = {
       paths.state,
       paths.duty,
+      paths.period,
       paths.speed,
   };
   for (size_t index = 0; index < snapshot_paths.size(); ++index) {
@@ -124,7 +125,7 @@ ApplyResult ApplyDutyUnlessStopped(
   if (duty_ns == 0) {
     writes.emplace_back(paths.duty, "0");
   } else {
-    writes.emplace_back(paths.speed, std::to_string(kPwmPeriodNs));
+    writes.emplace_back(paths.period, std::to_string(kPwmPeriodNs));
     writes.emplace_back(paths.duty, std::to_string(duty_ns));
     writes.emplace_back(paths.state, "1");
   }

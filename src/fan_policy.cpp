@@ -11,6 +11,7 @@ namespace {
 constexpr char kProductDevice[] = "odin2_mini";
 constexpr char kStatePath[] = "/sys/class/gpio5_pwm2/state";
 constexpr char kDutyPath[] = "/sys/class/gpio5_pwm2/duty";
+constexpr char kPeriodPath[] = "/sys/class/gpio5_pwm2/period";
 constexpr char kSpeedPath[] = "/sys/class/gpio5_pwm2/speed";
 
 int SmartDutyForTemperature(int temperature_c) {
@@ -29,7 +30,8 @@ int SmartDutyForTemperature(int temperature_c) {
 }  // namespace
 
 const SysfsPaths& StockSysfsPaths() {
-  static const SysfsPaths paths = {kStatePath, kDutyPath, kSpeedPath};
+  static const SysfsPaths paths = {kStatePath, kDutyPath, kPeriodPath,
+                                   kSpeedPath};
   return paths;
 }
 
@@ -40,7 +42,7 @@ bool IsSupportedDevice(const std::string& product_device) {
 bool AreExpectedSysfsPaths(const SysfsPaths& paths) {
   const SysfsPaths& stock = StockSysfsPaths();
   return paths.state == stock.state && paths.duty == stock.duty &&
-         paths.speed == stock.speed;
+         paths.period == stock.period && paths.speed == stock.speed;
 }
 
 PolicyResult ResolveDuty(const FanSettings& settings, int temperature_c) {
