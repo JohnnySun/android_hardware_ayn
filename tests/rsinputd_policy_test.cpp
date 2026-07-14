@@ -67,14 +67,16 @@ void CollectMappedEvents(void* context, const Status& status) {
   events->insert(events->end(), mapped.begin(), mapped.end());
 }
 
-void OnlyTheTwoInitializationFramesAreEncoded() {
-  const auto frames = ayn::rsinput::BuildInitializationFrames();
-  CHECK(frames.size() == 2);
-  CheckFrame(frames[0], {0xA5, 0xD3, 0x5A, 0x3D, 0x00, 0x01, 0x01, 0x00,
-                         0x02, 0x02});
-  CheckFrame(frames[1], {0xA5, 0xD3, 0x5A, 0x3D, 0x01, 0x01, 0x0A, 0x00,
-                         0x05, 0x01, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00,
-                         0x00, 0x07, 0x21});
+void ExactQ9HandshakeFramesAreEncoded() {
+  const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
+  CHECK(frames.size() == 3);
+  CheckFrame(frames[0], {0xA5, 0xD3, 0x5A, 0x3D, 0x01, 0x01, 0x01, 0x00,
+                         0x06, 0x07});
+  CheckFrame(frames[1], {0xA5, 0xD3, 0x5A, 0x3D, 0x02, 0x01, 0x0A, 0x00,
+                         0x05, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00,
+                         0x00, 0x01, 0x09});
+  CheckFrame(frames[2], {0xA5, 0xD3, 0x5A, 0x3D, 0x03, 0x01, 0x01, 0x00,
+                         0x06, 0x05});
 }
 
 void DeviceGateIsExactAndFailClosed() {
@@ -185,8 +187,8 @@ void MalformedOrIncompleteDataCannotEmitInputEvents() {
 
 int main() {
   const std::vector<std::pair<std::string, void (*)()>> tests = {
-      {"only the two initialization frames are encoded",
-       OnlyTheTwoInitializationFramesAreEncoded},
+      {"exact Q9 handshake frames are encoded",
+       ExactQ9HandshakeFramesAreEncoded},
       {"device gate is exact and fail closed", DeviceGateIsExactAndFailClosed},
       {"unsupported device cannot enter runtime I/O",
        UnsupportedDeviceCannotEnterRuntimeIo},

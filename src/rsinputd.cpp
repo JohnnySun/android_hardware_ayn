@@ -14,8 +14,10 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +31,7 @@ namespace {
 constexpr char kUartPath[] = "/dev/ttyHS1";
 constexpr char kUinputPath[] = "/dev/uinput";
 constexpr char kGamepadName[] = "AYN Odin2 Gamepad";
+constexpr uint32_t kHandshakeResponseTimeoutMs = 1000;
 constexpr uint32_t kInitialRetryDelayMs = 250;
 constexpr uint32_t kMaxRetryDelayMs = 5000;
 constexpr uint32_t kStopCheckIntervalMs = 50;
@@ -100,6 +103,39 @@ bool WriteAll(int fd, const void* data, size_t size) {
     size -= static_cast<size_t>(written);
   }
   return true;
+}
+
+bool WriteMcuPowerControl(void*, const char* path, const uint8_t* data,
+                          size_t size) {
+  const int fd = open(path, O_WRONLY | O_CLOEXEC);
+  if (fd < 0) {
+    PLOG(ERROR) << "cannot open RSInput MCU power control";
+    return false;
+  }
+  const bool written = WriteAll(fd, data, size);
+  if (close(fd) != 0) {
+    PLOG(ERROR) << "cannot close RSInput MCU power control";
+    return false;
+  }
+  return written;
+}
+
+bool SetRuntimeMcuPower(bool enabled) {
+  if (ayn::rsinput::WriteMcuPowerState(WriteMcuPowerControl, nullptr,
+                                       enabled)) {
+    return true;
+  }
+  LOG(ERROR) << "cannot set RSInput MCU power state to "
+             << (enabled ? "on" : "off");
+  return false;
+}
+
+bool PowerOnRuntimeMcu(void*) {
+  return SetRuntimeMcuPower(true);
+}
+
+bool PowerOffRuntimeMcu(void*) {
+  return SetRuntimeMcuPower(false);
 }
 
 int OpenConfiguredUart() {
@@ -238,6 +274,101 @@ bool WriteInitializationFrame(void* context, const uint8_t* data, size_t size) {
   return WriteAll(*static_cast<int*>(context), data, size);
 }
 
+uint64_t MonotonicMilliseconds(void*) {
+  return static_cast<uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+
+ayn::rsinput::HandshakeReadResult ReadHandshakeBytes(
+    void* context, uint8_t* data, size_t capacity, size_t* size,
+    uint32_t timeout_ms) {
+  const int uart_fd = *static_cast<int*>(context);
+  const uint64_t started_ms = MonotonicMilliseconds(nullptr);
+  *size = 0;
+  while (g_stop_requested == 0) {
+    const uint64_t elapsed_ms = MonotonicMilliseconds(nullptr) - started_ms;
+    if (elapsed_ms >= timeout_ms) {
+      return ayn::rsinput::HandshakeReadResult::kTimeout;
+    }
+    const uint32_t remaining_ms =
+        timeout_ms - static_cast<uint32_t>(elapsed_ms);
+    const uint32_t wait_ms = std::min(remaining_ms, kStopCheckIntervalMs);
+    pollfd uart_poll{uart_fd, POLLIN, 0};
+    const int poll_result = poll(&uart_poll, 1, static_cast<int>(wait_ms));
+    if (poll_result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      PLOG(ERROR) << "RSInput UART handshake poll failed";
+      return ayn::rsinput::HandshakeReadResult::kFailed;
+    }
+    if (poll_result == 0) {
+      continue;
+    }
+    if ((uart_poll.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      LOG(ERROR) << "RSInput UART disconnected during handshake";
+      return ayn::rsinput::HandshakeReadResult::kFailed;
+    }
+    if ((uart_poll.revents & POLLIN) == 0) {
+      continue;
+    }
+
+    const ssize_t received = read(uart_fd, data, capacity);
+    if (received < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      PLOG(ERROR) << "RSInput UART handshake read failed";
+      return ayn::rsinput::HandshakeReadResult::kFailed;
+    }
+    if (received == 0) {
+      LOG(ERROR) << "RSInput UART closed during handshake";
+      return ayn::rsinput::HandshakeReadResult::kFailed;
+    }
+    *size = static_cast<size_t>(received);
+    return ayn::rsinput::HandshakeReadResult::kData;
+  }
+  return ayn::rsinput::HandshakeReadResult::kFailed;
+}
+
+const char* HandshakeStateName(ayn::rsinput::HandshakeState state) {
+  switch (state) {
+    case ayn::rsinput::HandshakeState::kNotStarted:
+      return "not-started";
+    case ayn::rsinput::HandshakeState::kAwaitingType1:
+      return "awaiting-type-1";
+    case ayn::rsinput::HandshakeState::kSendConfiguration:
+      return "send-configuration";
+    case ayn::rsinput::HandshakeState::kAwaitingType2:
+      return "awaiting-type-2";
+    case ayn::rsinput::HandshakeState::kInitialized:
+      return "initialized";
+    case ayn::rsinput::HandshakeState::kFailed:
+      return "failed";
+  }
+  return "unknown";
+}
+
+const char* HandshakeFailureName(ayn::rsinput::HandshakeFailure failure) {
+  switch (failure) {
+    case ayn::rsinput::HandshakeFailure::kNone:
+      return "none";
+    case ayn::rsinput::HandshakeFailure::kInvalidConfiguration:
+      return "invalid-configuration";
+    case ayn::rsinput::HandshakeFailure::kWrite:
+      return "write";
+    case ayn::rsinput::HandshakeFailure::kRead:
+      return "read";
+    case ayn::rsinput::HandshakeFailure::kTimeout:
+      return "timeout";
+    case ayn::rsinput::HandshakeFailure::kProtocol:
+      return "protocol";
+  }
+  return "unknown";
+}
+
 struct EventEmitter {
   int uinput_fd;
   bool failed = false;
@@ -312,8 +443,26 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void*, int uart_fd,
 }
 
 ayn::rsinput::StartupResult InitializeRuntimeSession(void*, int uart_fd) {
-  return ayn::rsinput::SendInitializationFramesUnlessStopped(
-      StopWasRequested, nullptr, WriteInitializationFrame, &uart_fd);
+  const ayn::rsinput::HandshakeCallbacks callbacks = {
+      StopWasRequested, WriteInitializationFrame, ReadHandshakeBytes,
+      MonotonicMilliseconds, &uart_fd,
+  };
+  ayn::rsinput::HandshakeDiagnostics diagnostics;
+  const ayn::rsinput::StartupResult result = ayn::rsinput::RunQ9Handshake(
+      callbacks, kHandshakeResponseTimeoutMs, &diagnostics);
+  if (result == ayn::rsinput::StartupResult::kFailed) {
+    LOG(ERROR) << "RSInput Q9 handshake failed"
+               << " reason=" << HandshakeFailureName(diagnostics.failure)
+               << " state=" << HandshakeStateName(diagnostics.state)
+               << " expected_response_type="
+               << static_cast<unsigned int>(
+                      diagnostics.expected_response_type)
+               << " malformed_frames="
+               << diagnostics.stats.malformed_frames
+               << " unrelated_packets="
+               << diagnostics.stats.unrelated_packets;
+  }
+  return result;
 }
 
 void WaitBeforeRetry(void*, uint32_t delay_ms) {
@@ -341,8 +490,9 @@ int RunSupportedDevice(void*) {
   }
 
   const ayn::rsinput::LifecycleCallbacks callbacks = {
-      StopWasRequested,       OpenRuntimeUart,      OpenRuntimeUinput,
-      CloseRuntimeUart,       CloseRuntimeUinput,  InitializeRuntimeSession,
+      StopWasRequested,       PowerOnRuntimeMcu,    PowerOffRuntimeMcu,
+      OpenRuntimeUart,        OpenRuntimeUinput,    CloseRuntimeUart,
+      CloseRuntimeUinput,     InitializeRuntimeSession,
       ForwardStatusFrames,    WaitBeforeRetry,      nullptr,
   };
   const ayn::rsinput::StartupResult result = ayn::rsinput::RunReconnectLoop(
