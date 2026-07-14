@@ -68,9 +68,9 @@ void Q9Handshake::ConfigurationSent() {
     Fail();
     return;
   }
-  buffered_size_ = 0;
   state_ = HandshakeState::kAwaitingType2;
   expected_response_type_ = kCmdStatus;
+  ProcessBuffered();
 }
 
 void Q9Handshake::Fail() {

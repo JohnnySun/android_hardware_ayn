@@ -40,6 +40,7 @@ struct Harness {
   size_t read_failures = 0;
   size_t emit_failures = 0;
   std::vector<uint32_t> retry_delays_ms;
+  std::vector<std::pair<bool, size_t>> power_transitions;
 };
 
 struct ControlWrite {
@@ -75,12 +76,14 @@ bool StopRequested(void* context) {
 bool PowerOn(void* context) {
   auto* harness = static_cast<Harness*>(context);
   ++harness->power_on_calls;
+  harness->power_transitions.emplace_back(true, harness->attempt);
   return !harness->fail_power_on;
 }
 
 bool PowerOff(void* context) {
   auto* harness = static_cast<Harness*>(context);
   ++harness->power_off_calls;
+  harness->power_transitions.emplace_back(false, harness->attempt);
   return !harness->fail_power_off;
 }
 
@@ -263,13 +266,32 @@ void Q9HandshakeWaitsForEachResponseBeforeAdvancing() {
   CHECK(diagnostics.expected_response_type == 0);
 }
 
-void PreconfigurationTypeTwoCannotCompleteHandshake() {
+void BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead() {
   HandshakeHarness harness;
   auto responses = MakeResponseFrame(0x50, 0x01, {0x01});
-  const auto early_type_two =
+  const auto type_two =
       MakeResponseFrame(0x51, 0x02, std::vector<uint8_t>(14, 0));
-  responses.insert(responses.end(), early_type_two.begin(),
-                   early_type_two.end());
+  responses.insert(responses.end(), type_two.begin(), type_two.end());
+  harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kData, responses, 10},
+  };
+  ayn::rsinput::HandshakeDiagnostics diagnostics;
+
+  CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
+                                     &diagnostics) ==
+        ayn::rsinput::StartupResult::kCompleted);
+  CheckQ9HandshakeWrites(harness);
+  CHECK((harness.writes_seen_by_read == std::vector<size_t>{1}));
+  CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
+  CHECK(diagnostics.stats.accepted_responses == 2);
+}
+
+void PreconfigurationTypeTwoCannotCompleteHandshake() {
+  HandshakeHarness harness;
+  auto responses = MakeResponseFrame(0x50, 0x02,
+                                     std::vector<uint8_t>(14, 0));
+  const auto type_one = MakeResponseFrame(0x51, 0x01, {0x01});
+  responses.insert(responses.end(), type_one.begin(), type_one.end());
   harness.reads = {
       {ayn::rsinput::HandshakeReadResult::kData, responses, 10},
       {ayn::rsinput::HandshakeReadResult::kData,
@@ -283,6 +305,7 @@ void PreconfigurationTypeTwoCannotCompleteHandshake() {
   CheckQ9HandshakeWrites(harness);
   CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 3}));
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
+  CHECK(diagnostics.stats.unrelated_packets == 1);
 }
 
 void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
@@ -344,8 +367,13 @@ void OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff() {
   CHECK(harness.uinput_close_calls == 4);
   CHECK((harness.retry_delays_ms ==
          std::vector<uint32_t>{100, 200, 400, 400, 400}));
-  CHECK(harness.power_on_calls == 1);
-  CHECK(harness.power_off_calls == 1);
+  CHECK(harness.power_on_calls == 2);
+  CHECK(harness.power_off_calls == 2);
+  CHECK((harness.power_transitions ==
+         std::vector<std::pair<bool, size_t>>{{true, 0},
+                                              {false, 3},
+                                              {true, 3},
+                                              {false, 6}}));
 }
 
 void PowerOnFailurePreventsUartOpenAndHandshake() {
@@ -388,6 +416,35 @@ void PowerOffFailureMakesLifecycleFailureVisible() {
   CHECK(harness.power_off_calls == 1);
 }
 
+void FailedHandshakePowerOffStopsWithoutRetry() {
+  Harness harness;
+  harness.attempt = 2;
+  harness.fail_power_off = true;
+  const auto callbacks = MakeLifecycleCallbacks(&harness);
+
+  CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {250, 5000}) ==
+        ayn::rsinput::StartupResult::kFailed);
+  CHECK(harness.attempt == 3);
+  CHECK(harness.initialization_calls == 1);
+  CHECK(harness.retry_delays_ms.empty());
+  CHECK((harness.power_transitions ==
+         std::vector<std::pair<bool, size_t>>{{true, 2}, {false, 3}}));
+}
+
+void StopAfterFailedHandshakeLeavesMcuOffWithoutRetry() {
+  Harness harness;
+  harness.attempt = 2;
+  auto callbacks = MakeLifecycleCallbacks(&harness);
+  callbacks.wait_before_retry = WaitAndRequestStop;
+
+  CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {250, 5000}) ==
+        ayn::rsinput::StartupResult::kStopped);
+  CHECK(harness.attempt == 3);
+  CHECK((harness.retry_delays_ms == std::vector<uint32_t>{250}));
+  CHECK((harness.power_transitions ==
+         std::vector<std::pair<bool, size_t>>{{true, 2}, {false, 3}}));
+}
+
 void StopDuringBackoffInterruptsBeforeAnotherAttempt() {
   Harness harness;
   auto callbacks = MakeLifecycleCallbacks(&harness);
@@ -417,21 +474,28 @@ int main() {
        McuPowerControlUsesExactStockPathAndBytes},
       {"Q9 handshake waits for each response before advancing",
        Q9HandshakeWaitsForEachResponseBeforeAdvancing},
+      {"open, initialization, read, and emit failures reconnect with bounded "
+       "backoff",
+       OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff},
+      {"buffered type two after type one completes handshake without another "
+       "read",
+       BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead},
       {"preconfiguration type two cannot complete handshake",
        PreconfigurationTypeTwoCannotCompleteHandshake},
       {"malformed and unrelated packets remain uninitialized until timeout",
        MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout},
       {"missing type two response fails closed after configuration",
        MissingTypeTwoResponseFailsClosedAfterConfiguration},
-      {"open, initialization, read, and emit failures reconnect with bounded "
-       "backoff",
-       OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff},
       {"power-on failure prevents UART open and handshake",
        PowerOnFailurePreventsUartOpenAndHandshake},
       {"owned power is released once when cleanup is safe",
        OwnedPowerIsReleasedOnceWhenCleanupIsSafe},
       {"power-off failure makes lifecycle failure visible",
        PowerOffFailureMakesLifecycleFailureVisible},
+      {"failed handshake power-off stops without retry",
+       FailedHandshakePowerOffStopsWithoutRetry},
+      {"stop after failed handshake leaves MCU off without retry",
+       StopAfterFailedHandshakeLeavesMcuOffWithoutRetry},
       {"stop during backoff interrupts before another attempt",
        StopDuringBackoffInterruptsBeforeAnotherAttempt},
       {"invalid retry policy cannot enter runtime I/O",

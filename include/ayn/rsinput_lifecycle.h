@@ -63,8 +63,9 @@ struct HandshakeDiagnostics {
 
 struct LifecycleCallbacks {
   StopRequested stop_requested;
-  // RunReconnectLoop owns one successful power_on across all reconnects and
-  // calls power_off once on exit. Failed power_on calls do not earn ownership.
+  // RunReconnectLoop owns one successful power_on across ordinary reconnects,
+  // power-cycles after failed initialization, and powers off on exit. Failed
+  // power_on calls do not earn ownership.
   PowerController power_on;
   PowerController power_off;
   UartOpener open_uart;

@@ -153,15 +153,17 @@ StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
   }
 
   uint32_t retry_delay_ms = retry_policy.initial_delay_ms;
-  // A successful power-on is owned across reconnect attempts and released once
-  // when the daemon loop exits; failed power-on attempts never earn ownership.
   bool power_owned = false;
-  const auto finish = [&callbacks, &power_owned](StartupResult result) {
-    if (power_owned) {
-      power_owned = false;
-      if (!callbacks.power_off(callbacks.context)) {
-        return StartupResult::kFailed;
-      }
+  const auto release_power = [&callbacks, &power_owned]() {
+    if (!power_owned) {
+      return true;
+    }
+    power_owned = false;
+    return callbacks.power_off(callbacks.context);
+  };
+  const auto finish = [&release_power](StartupResult result) {
+    if (!release_power()) {
+      return StartupResult::kFailed;
     }
     return result;
   };
@@ -193,9 +195,11 @@ StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
           callbacks.stop_requested, callbacks.context, callbacks.open_uinput,
           callbacks.context, &uinput_fd);
     }
+    bool initialization_failed = false;
     if (attempt_result == StartupResult::kCompleted) {
       attempt_result =
           callbacks.initialize_session(callbacks.context, uart_fd);
+      initialization_failed = attempt_result == StartupResult::kFailed;
     }
     if (attempt_result == StartupResult::kCompleted) {
       attempt_result = callbacks.forward_session(callbacks.context, uart_fd,
@@ -214,6 +218,9 @@ StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
       return finish(StartupResult::kStopped);
     }
 
+    if (initialization_failed && !release_power()) {
+      return StartupResult::kFailed;
+    }
     callbacks.wait_before_retry(callbacks.context, retry_delay_ms);
     if (callbacks.stop_requested(callbacks.context)) {
       return finish(StartupResult::kStopped);
