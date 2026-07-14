@@ -76,6 +76,34 @@ echo "CXX=$CXX"
   -o "$BUILD_DIR/fan_adapter_test"
 "$BUILD_DIR/fan_adapter_test"
 
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
+  "$ROOT/src/fan_status.cpp" \
+  "$ROOT/tests/fan_status_test.cpp" \
+  -o "$BUILD_DIR/fan_status_test"
+"$BUILD_DIR/fan_status_test"
+
+if grep -Eq \
+     'SysfsWriter|writer_context|write_file|::write|(^|[^[:alnum:]_])p?write[[:space:]]*\(' \
+     "$ROOT/include/ayn/fan_status.h" "$ROOT/src/fan_status.cpp"; then
+  echo "error: fan status core must not expose or invoke a write surface" >&2
+  exit 1
+fi
+
+fan_status_module="$(sed -n \
+  '/name: "libayn_fan_status_core"/,/^}/p' "$ROOT/Android.bp")"
+if printf '%s\n' "$fan_status_module" | grep -q 'libayn_fan_service_core'; then
+  echo "error: fan status core must not link the write-capable fan service" >&2
+  exit 1
+fi
+if printf '%s\n' "$fan_status_module" | grep -q 'libayn_fan_policy'; then
+  echo "error: fan status core must not inherit unvalidated write policy" >&2
+  exit 1
+fi
+
 if ! grep -qx '    disabled' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    oneshot' "$ROOT/rsinputd.rc"; then
   echo "error: daemon-owned retries require rsinputd to remain disabled and oneshot" >&2

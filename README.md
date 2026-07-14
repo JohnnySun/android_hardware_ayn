@@ -22,6 +22,12 @@ settings source deliberately returns unavailable, so no sysfs I/O is reachable
 until a separate, safety-reviewed product change supplies settings and start
 wiring.
 
+`libayn_fan_status_core` is an independent, read-only Q9 status reader. It
+requires both the exact `odin2_mini` product identity and the stock `Q9` retro
+identity before reading the observed `gpio5_pwm2` `state` and `duty` nodes. It
+has no write adapter and does not inherit the currently unvalidated fan write
+policy. In particular, no third `speed` node or unit interpretation is assumed.
+
 Run all host tests on a development host with:
 
 ```sh
@@ -31,7 +37,7 @@ Run all host tests on a development host with:
 The test entry point uses warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. The same tests are also exposed to Soong as
 `ayn_rsinput_parser_test`, `ayn_rsinputd_policy_test`, and
-`ayn_fan_service_test`, and `ayn_fan_adapter_test`.
+`ayn_fan_service_test`, `ayn_fan_adapter_test`, and `ayn_fan_status_test`.
 
 ## License
 
