@@ -3,6 +3,7 @@
 on boot && property:ro.product.device=odin2_mini
     start rsinputd
 
+# The daemon owns bounded reconnects; init must not add a restart loop.
 service rsinputd /system/bin/rsinputd
     class late_start
     user system

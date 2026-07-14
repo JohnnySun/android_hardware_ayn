@@ -27,6 +27,15 @@ struct Harness {
   size_t open_calls = 0;
   std::vector<std::vector<uint8_t>> writes;
   size_t request_stop_after_writes = 0;
+  size_t attempt = 0;
+  size_t uart_close_calls = 0;
+  size_t uinput_open_calls = 0;
+  size_t uinput_close_calls = 0;
+  size_t initialization_calls = 0;
+  size_t forward_calls = 0;
+  size_t read_failures = 0;
+  size_t emit_failures = 0;
+  std::vector<uint32_t> retry_delays_ms;
 };
 
 bool StopRequested(void* context) {
@@ -46,6 +55,66 @@ bool WriteFrame(void* context, const uint8_t* data, size_t size) {
     harness->stop_requested = true;
   }
   return true;
+}
+
+int OpenSessionUart(void* context) {
+  auto* harness = static_cast<Harness*>(context);
+  ++harness->attempt;
+  return harness->attempt == 1 ? -1 : static_cast<int>(100 + harness->attempt);
+}
+
+int OpenSessionUinput(void* context) {
+  auto* harness = static_cast<Harness*>(context);
+  ++harness->uinput_open_calls;
+  return harness->attempt == 2 ? -1 : static_cast<int>(200 + harness->attempt);
+}
+
+void CloseSessionUart(void* context, int) {
+  ++static_cast<Harness*>(context)->uart_close_calls;
+}
+
+void CloseSessionUinput(void* context, int) {
+  ++static_cast<Harness*>(context)->uinput_close_calls;
+}
+
+ayn::rsinput::StartupResult InitializeSession(void* context, int) {
+  auto* harness = static_cast<Harness*>(context);
+  ++harness->initialization_calls;
+  return harness->attempt == 3 ? ayn::rsinput::StartupResult::kFailed
+                               : ayn::rsinput::StartupResult::kCompleted;
+}
+
+ayn::rsinput::StartupResult ForwardSession(void* context, int, int) {
+  auto* harness = static_cast<Harness*>(context);
+  ++harness->forward_calls;
+  if (harness->attempt == 4) {
+    ++harness->read_failures;
+    return ayn::rsinput::StartupResult::kFailed;
+  }
+  if (harness->attempt == 5) {
+    ++harness->emit_failures;
+    return ayn::rsinput::StartupResult::kFailed;
+  }
+  harness->stop_requested = true;
+  return ayn::rsinput::StartupResult::kStopped;
+}
+
+void WaitBeforeRetry(void* context, uint32_t delay_ms) {
+  static_cast<Harness*>(context)->retry_delays_ms.push_back(delay_ms);
+}
+
+void WaitAndRequestStop(void* context, uint32_t delay_ms) {
+  auto* harness = static_cast<Harness*>(context);
+  harness->retry_delays_ms.push_back(delay_ms);
+  harness->stop_requested = true;
+}
+
+ayn::rsinput::LifecycleCallbacks MakeLifecycleCallbacks(Harness* harness) {
+  return {
+      StopRequested,       OpenSessionUart,   OpenSessionUinput,
+      CloseSessionUart,    CloseSessionUinput, InitializeSession,
+      ForwardSession,      WaitBeforeRetry,   harness,
+  };
 }
 
 void RunningStartupOpensUartAndWritesBothInitializationFrames() {
@@ -89,6 +158,45 @@ void StopBetweenInitializationFramesPreventsSecondWrite() {
   CHECK(harness.writes.size() == 1);
 }
 
+void OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff() {
+  Harness harness;
+  const auto callbacks = MakeLifecycleCallbacks(&harness);
+
+  CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {100, 400}) ==
+        ayn::rsinput::StartupResult::kStopped);
+  CHECK(harness.attempt == 6);
+  CHECK(harness.uinput_open_calls == 5);
+  CHECK(harness.initialization_calls == 4);
+  CHECK(harness.forward_calls == 3);
+  CHECK(harness.read_failures == 1);
+  CHECK(harness.emit_failures == 1);
+  CHECK(harness.uart_close_calls == 5);
+  CHECK(harness.uinput_close_calls == 4);
+  CHECK((harness.retry_delays_ms ==
+         std::vector<uint32_t>{100, 200, 400, 400, 400}));
+}
+
+void StopDuringBackoffInterruptsBeforeAnotherAttempt() {
+  Harness harness;
+  auto callbacks = MakeLifecycleCallbacks(&harness);
+  callbacks.wait_before_retry = WaitAndRequestStop;
+
+  CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {250, 5000}) ==
+        ayn::rsinput::StartupResult::kStopped);
+  CHECK(harness.attempt == 1);
+  CHECK((harness.retry_delays_ms == std::vector<uint32_t>{250}));
+}
+
+void InvalidRetryPolicyCannotEnterRuntimeIo() {
+  Harness harness;
+  const auto callbacks = MakeLifecycleCallbacks(&harness);
+
+  CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {0, 5000}) ==
+        ayn::rsinput::StartupResult::kFailed);
+  CHECK(harness.attempt == 0);
+  CHECK(harness.retry_delays_ms.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -99,6 +207,13 @@ int main() {
        StopBeforeStartupPreventsUartOpenAndInitializationWrites},
       {"stop between initialization frames prevents second write",
        StopBetweenInitializationFramesPreventsSecondWrite},
+      {"open, initialization, read, and emit failures reconnect with bounded "
+       "backoff",
+       OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff},
+      {"stop during backoff interrupts before another attempt",
+       StopDuringBackoffInterruptsBeforeAnotherAttempt},
+      {"invalid retry policy cannot enter runtime I/O",
+       InvalidRetryPolicyCannotEnterRuntimeIo},
   };
 
   size_t passed = 0;

@@ -78,7 +78,14 @@ echo "CXX=$CXX"
 
 if ! grep -qx '    disabled' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    oneshot' "$ROOT/rsinputd.rc"; then
-  echo "error: rsinputd must remain disabled and oneshot" >&2
+  echo "error: daemon-owned retries require rsinputd to remain disabled and oneshot" >&2
+  exit 1
+fi
+
+if grep -Eq \
+     '^[[:space:]]*(restart_period|critical|reboot_on_failure|onrestart)([[:space:]]|$)|^[[:space:]]*restart[[:space:]]+rsinputd([[:space:]]|$)' \
+     "$ROOT/rsinputd.rc"; then
+  echo "error: init must not add an independent rsinputd restart policy" >&2
   exit 1
 fi
 

@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
+#include <poll.h>
 #include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
@@ -28,6 +29,9 @@ namespace {
 constexpr char kUartPath[] = "/dev/ttyHS1";
 constexpr char kUinputPath[] = "/dev/uinput";
 constexpr char kGamepadName[] = "AYN Odin2 Gamepad";
+constexpr uint32_t kInitialRetryDelayMs = 250;
+constexpr uint32_t kMaxRetryDelayMs = 5000;
+constexpr uint32_t kStopCheckIntervalMs = 50;
 
 volatile sig_atomic_t g_stop_requested = 0;
 
@@ -74,47 +78,15 @@ static_assert(ayn::rsinput::kAbsRx == ABS_RX);
 static_assert(ayn::rsinput::kAbsRy == ABS_RY);
 static_assert(ayn::rsinput::kAbsRz == ABS_RZ);
 
-class FileDescriptor {
- public:
-  explicit FileDescriptor(int fd = -1) : fd_(fd) {}
-  ~FileDescriptor() {
-    if (fd_ >= 0) {
-      close(fd_);
-    }
-  }
-
-  FileDescriptor(const FileDescriptor&) = delete;
-  FileDescriptor& operator=(const FileDescriptor&) = delete;
-
-  int get() const { return fd_; }
-  bool valid() const { return fd_ >= 0; }
-
- private:
-  int fd_;
-};
-
-class UinputDevice {
- public:
-  explicit UinputDevice(int fd) : fd_(fd) {}
-  ~UinputDevice() {
-    if (created_) {
-      ioctl(fd_, UI_DEV_DESTROY);
-    }
-  }
-
-  void MarkCreated() { created_ = true; }
-
- private:
-  int fd_;
-  bool created_ = false;
-};
-
 bool WriteAll(int fd, const void* data, size_t size) {
   const auto* bytes = static_cast<const uint8_t*>(data);
   while (size != 0) {
     const ssize_t written = write(fd, bytes, size);
     if (written < 0) {
       if (errno == EINTR) {
+        if (g_stop_requested != 0) {
+          return false;
+        }
         continue;
       }
       PLOG(ERROR) << "write failed";
@@ -238,6 +210,30 @@ int OpenRuntimeUart(void*) {
   return OpenConfiguredUart();
 }
 
+int OpenRuntimeUinput(void*) {
+  const int fd = open(kUinputPath, O_WRONLY | O_CLOEXEC);
+  if (fd < 0) {
+    PLOG(ERROR) << "cannot open uinput";
+    return -1;
+  }
+  if (!CreateUinputGamepad(fd)) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+void CloseRuntimeUart(void*, int fd) {
+  close(fd);
+}
+
+void CloseRuntimeUinput(void*, int fd) {
+  if (ioctl(fd, UI_DEV_DESTROY) != 0) {
+    PLOG(WARNING) << "cannot destroy uinput gamepad";
+  }
+  close(fd);
+}
+
 bool WriteInitializationFrame(void* context, const uint8_t* data, size_t size) {
   return WriteAll(*static_cast<int*>(context), data, size);
 }
@@ -265,28 +261,78 @@ void EmitStatus(void* context, const ayn::rsinput::Status& status) {
   }
 }
 
-int ForwardStatusFrames(int uart_fd, int uinput_fd) {
+ayn::rsinput::StartupResult ForwardStatusFrames(void*, int uart_fd,
+                                                int uinput_fd) {
   ayn::rsinput::Parser parser;
   EventEmitter emitter{uinput_fd};
   std::array<uint8_t, 256> buffer{};
 
   while (g_stop_requested == 0 && !emitter.failed) {
-    const ssize_t received = read(uart_fd, buffer.data(), buffer.size());
-    if (received < 0) {
+    pollfd uart_poll{uart_fd, POLLIN, 0};
+    const int poll_result =
+        poll(&uart_poll, 1, static_cast<int>(kStopCheckIntervalMs));
+    if (poll_result < 0) {
       if (errno == EINTR) {
         continue;
       }
+      PLOG(ERROR) << "RSInput UART poll failed";
+      return ayn::rsinput::StartupResult::kFailed;
+    }
+    if (poll_result == 0) {
+      continue;
+    }
+    if ((uart_poll.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
+      LOG(ERROR) << "RSInput UART disconnected";
+      return ayn::rsinput::StartupResult::kFailed;
+    }
+    if ((uart_poll.revents & POLLIN) == 0) {
+      continue;
+    }
+
+    const ssize_t received = read(uart_fd, buffer.data(), buffer.size());
+    if (received < 0) {
+      if (errno == EINTR) {
+        if (g_stop_requested != 0) {
+          return ayn::rsinput::StartupResult::kStopped;
+        }
+        continue;
+      }
       PLOG(ERROR) << "RSInput UART read failed";
-      return EXIT_FAILURE;
+      return ayn::rsinput::StartupResult::kFailed;
     }
     if (received == 0) {
       LOG(ERROR) << "RSInput UART closed";
-      return EXIT_FAILURE;
+      return ayn::rsinput::StartupResult::kFailed;
     }
     parser.Feed(buffer.data(), static_cast<size_t>(received), EmitStatus,
                 &emitter);
   }
-  return emitter.failed ? EXIT_FAILURE : EXIT_SUCCESS;
+  return g_stop_requested != 0 ? ayn::rsinput::StartupResult::kStopped
+                               : ayn::rsinput::StartupResult::kFailed;
+}
+
+ayn::rsinput::StartupResult InitializeRuntimeSession(void*, int uart_fd) {
+  return ayn::rsinput::SendInitializationFramesUnlessStopped(
+      StopWasRequested, nullptr, WriteInitializationFrame, &uart_fd);
+}
+
+void WaitBeforeRetry(void*, uint32_t delay_ms) {
+  LOG(WARNING) << "reconnecting RSInput in " << delay_ms << " ms";
+  uint32_t remaining_ms = delay_ms;
+  while (remaining_ms != 0 && g_stop_requested == 0) {
+    const uint32_t wait_ms = remaining_ms > kStopCheckIntervalMs
+                                 ? kStopCheckIntervalMs
+                                 : remaining_ms;
+    const int result = poll(nullptr, 0, static_cast<int>(wait_ms));
+    if (result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      PLOG(ERROR) << "RSInput retry wait failed";
+      return;
+    }
+    remaining_ms -= wait_ms;
+  }
 }
 
 int RunSupportedDevice(void*) {
@@ -294,38 +340,15 @@ int RunSupportedDevice(void*) {
     return EXIT_FAILURE;
   }
 
-  int uart_fd = -1;
-  const ayn::rsinput::StartupResult open_result =
-      ayn::rsinput::OpenUartUnlessStopped(StopWasRequested, nullptr,
-                                         OpenRuntimeUart, nullptr, &uart_fd);
-  FileDescriptor uart(uart_fd);
-  if (open_result == ayn::rsinput::StartupResult::kStopped) {
-    return EXIT_SUCCESS;
-  }
-  if (open_result == ayn::rsinput::StartupResult::kFailed) {
-    return EXIT_FAILURE;
-  }
-  FileDescriptor uinput(open(kUinputPath, O_WRONLY | O_CLOEXEC));
-  if (!uinput.valid()) {
-    PLOG(ERROR) << "cannot open uinput";
-    return EXIT_FAILURE;
-  }
-  if (!CreateUinputGamepad(uinput.get())) {
-    return EXIT_FAILURE;
-  }
-  UinputDevice gamepad(uinput.get());
-  gamepad.MarkCreated();
-
-  const ayn::rsinput::StartupResult initialization_result =
-      ayn::rsinput::SendInitializationFramesUnlessStopped(
-          StopWasRequested, nullptr, WriteInitializationFrame, &uart_fd);
-  if (initialization_result == ayn::rsinput::StartupResult::kStopped) {
-    return EXIT_SUCCESS;
-  }
-  if (initialization_result == ayn::rsinput::StartupResult::kFailed) {
-    return EXIT_FAILURE;
-  }
-  return ForwardStatusFrames(uart.get(), uinput.get());
+  const ayn::rsinput::LifecycleCallbacks callbacks = {
+      StopWasRequested,       OpenRuntimeUart,      OpenRuntimeUinput,
+      CloseRuntimeUart,       CloseRuntimeUinput,  InitializeRuntimeSession,
+      ForwardStatusFrames,    WaitBeforeRetry,      nullptr,
+  };
+  const ayn::rsinput::StartupResult result = ayn::rsinput::RunReconnectLoop(
+      callbacks, {kInitialRetryDelayMs, kMaxRetryDelayMs});
+  return result == ayn::rsinput::StartupResult::kStopped ? EXIT_SUCCESS
+                                                         : EXIT_FAILURE;
 }
 
 }  // namespace
