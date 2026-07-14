@@ -122,7 +122,9 @@ void StatusBitsMapToTheRequiredLinuxCodes() {
   for (size_t bit = 0; bit < expected_codes.size(); ++bit) {
     CHECK(events[bit].type == ayn::rsinput::kEventTypeKey);
     CHECK(events[bit].code == expected_codes[bit]);
-    CHECK(events[bit].value == ((status.buttons >> bit) & 1u));
+    const int32_t expected_value =
+        static_cast<int32_t>((status.buttons >> bit) & 1u);
+    CHECK(events[bit].value == expected_value);
   }
 }
 
