@@ -13,6 +13,7 @@ namespace {
 constexpr size_t kMaximumRawValueBytes = 32;
 constexpr char kProductDevice[] = "odin2_mini";
 constexpr char kRetroName[] = "Q9";
+constexpr char kVendorModel[] = "Odin2 Mini";
 constexpr char kStatePath[] = "/sys/class/gpio5_pwm2/state";
 constexpr char kDutyPath[] = "/sys/class/gpio5_pwm2/duty";
 
@@ -78,8 +79,11 @@ FanStatusRead ReadFanStatus(const FanStatusIdentity& identity,
                             const FanStatusPaths& paths,
                             FanStatusReader read_file,
                             void* reader_context) {
+  const bool exact_stock_identity = identity.retro_name == kRetroName;
+  const bool exact_lineage_identity = identity.retro_name.empty() &&
+                                      identity.vendor_model == kVendorModel;
   if (identity.product_device != kProductDevice ||
-      identity.retro_name != kRetroName) {
+      (!exact_stock_identity && !exact_lineage_identity)) {
     return {FanStatusResult::kUnsupportedDevice, std::nullopt};
   }
   if (paths.state != kStatePath || paths.duty != kDutyPath) {

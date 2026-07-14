@@ -35,7 +35,9 @@ using ReadSignature = FanStatusRead (*)(const FanStatusIdentity&,
 static_assert(
     std::is_same_v<decltype(&ayn::fan::ReadFanStatus), ReadSignature>);
 
-const FanStatusIdentity kExpectedIdentity = {"odin2_mini", "Q9"};
+const FanStatusIdentity kExpectedIdentity = {"odin2_mini", "Q9", ""};
+const FanStatusIdentity kExpectedLineageIdentity = {
+    "odin2_mini", "", "Odin2 Mini"};
 
 const FanStatusPaths kExpectedPaths = {
     "/sys/class/gpio5_pwm2/state",
@@ -90,14 +92,20 @@ void ValidSnapshotPreservesRawValuesAndReadOrder() {
   CHECK(disabled_status.result == FanStatusResult::kAvailable);
   CHECK(disabled_status.snapshot.has_value());
   CHECK(disabled_status.snapshot->state == 0);
+
+  Harness lineage;
+  const FanStatusRead lineage_status = Read(&lineage, kExpectedLineageIdentity);
+  CHECK(lineage_status.result == FanStatusResult::kAvailable);
+  CHECK(lineage_status.snapshot.has_value());
 }
 
 void IdentityAndEveryPathMustMatchBeforeReading() {
   for (const FanStatusIdentity& identity : {
-           FanStatusIdentity{"kalama", "Q9"},
-           FanStatusIdentity{"odin2_mini", ""},
-           FanStatusIdentity{"odin2_mini", "q9"},
-           FanStatusIdentity{"odin2_mini", "Q9 "},
+           FanStatusIdentity{"kalama", "Q9", ""},
+           FanStatusIdentity{"odin2_mini", "", ""},
+           FanStatusIdentity{"odin2_mini", "", "Odin2"},
+           FanStatusIdentity{"odin2_mini", "q9", "Odin2 Mini"},
+           FanStatusIdentity{"odin2_mini", "Q9 ", "Odin2 Mini"},
        }) {
     Harness unsupported;
     const FanStatusRead unsupported_status = Read(&unsupported, identity);

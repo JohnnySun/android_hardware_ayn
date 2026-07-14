@@ -20,6 +20,7 @@ enum class FanStatusResult {
 struct FanStatusIdentity {
   std::string product_device;
   std::string retro_name;
+  std::string vendor_model;
 };
 
 struct FanStatusPaths {
