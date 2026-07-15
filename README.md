@@ -41,6 +41,13 @@ UndefinedBehaviorSanitizer. The same tests are also exposed to Soong as
 `ayn_fan_service_test`, `ayn_fan_transaction_test`, `ayn_fan_adapter_test`, and
 `ayn_fan_status_test`.
 
+For device bring-up, `m ayn_rsinput_selftest` builds a manually invoked,
+test-only utility that creates the same `2020:3001` Android gamepad
+identity and emits a bounded button/axis sequence. It does not open the
+controller UART or touch MCU, fan, or sysfs controls. Capture `dumpsys input`
+and `getevent` while it runs to distinguish Android InputReader and keylayout
+behavior from physical controller transport faults.
+
 ## License
 
 Apache-2.0. See `LICENSE`.

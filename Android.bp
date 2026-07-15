@@ -84,6 +84,17 @@ cc_binary {
     ],
 }
 
+// Manually built bring-up utility. It is not included in any product package.
+cc_test {
+    name: "ayn_rsinput_selftest",
+    srcs: ["tools/rsinput_selftest.cpp"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+}
+
 cc_test_host {
     name: "ayn_rsinput_parser_test",
     defaults: ["ayn_host_test_defaults"],
