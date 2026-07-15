@@ -186,6 +186,19 @@ if ! grep -q 'read(uart_fd, data, std::min<size_t>(capacity, 1))' \
   exit 1
 fi
 
+for assignment in \
+  'device.absmin[axis] = ayn::rsinput::kStickAxisMin;' \
+  'device.absmax[axis] = ayn::rsinput::kStickAxisMax;' \
+  'device.absflat[axis] = ayn::rsinput::kStickAxisFlat;' \
+  'device.absmin[axis] = ayn::rsinput::kTriggerAxisMin;' \
+  'device.absmax[axis] = ayn::rsinput::kTriggerAxisMax;' \
+  'device.absflat[axis] = ayn::rsinput::kTriggerAxisFlat;'; do
+  if ! grep -Fqx "    $assignment" "$ROOT/src/rsinputd.cpp"; then
+    echo "error: rsinputd must wire the tested Odin axis profile into uinput" >&2
+    exit 1
+  fi
+done
+
 odinfand_expected="$BUILD_DIR/odinfand.rc.expected"
 cat >"$odinfand_expected" <<'EOF'
 # SPDX-License-Identifier: Apache-2.0
