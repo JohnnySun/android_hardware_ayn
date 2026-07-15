@@ -241,7 +241,7 @@ void CpuTemperatureReaderFailsClosedOnAmbiguousOrInvalidInput() {
   CHECK(!ayn::fan::ReadCpuTemperatureFromZones(ReadFile, &duplicate,
                                                 &temperature_c));
 
-  for (const std::string& raw : {"", "hot\n", "151\n", "151000\n"}) {
+  for (const char* raw : {"", "hot\n", "151\n", "151000\n"}) {
     Harness invalid;
     invalid.files[zone47 + "type"] = "cpu-0-0\n";
     invalid.files[zone47 + "temp"] = raw;
