@@ -61,6 +61,18 @@ std::vector<uint8_t> MakeStatusFrame() {
   return frame;
 }
 
+std::vector<uint8_t> MakeHandshakeResponse(uint8_t sequence, uint8_t type,
+                                           uint8_t payload) {
+  std::vector<uint8_t> frame(Parser::kMagic.begin(), Parser::kMagic.end());
+  frame.insert(frame.end(), {sequence, type, 0x01, 0x00, payload});
+  uint8_t checksum = 0;
+  for (size_t index = 4; index < frame.size(); ++index) {
+    checksum ^= frame[index];
+  }
+  frame.push_back(checksum);
+  return frame;
+}
+
 void CollectMappedEvents(void* context, const Status& status) {
   auto* events = static_cast<std::vector<InputEvent>*>(context);
   const auto mapped = MapStatusToEvents(status);
@@ -69,14 +81,32 @@ void CollectMappedEvents(void* context, const Status& status) {
 
 void ExactQ9HandshakeFramesAreEncoded() {
   const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
-  CHECK(frames.size() == 3);
-  CheckFrame(frames[0], {0xA5, 0xD3, 0x5A, 0x3D, 0x01, 0x01, 0x01, 0x00,
+  CHECK(frames.size() == 4);
+  CHECK((frames[0] ==
+         std::vector<uint8_t>{0x2e, 0x01, 0x02, 0x0a, 0x01, 0x00}));
+  CheckFrame(frames[1], {0xA5, 0xD3, 0x5A, 0x3D, 0x01, 0x01, 0x01, 0x00,
                          0x06, 0x07});
-  CheckFrame(frames[1], {0xA5, 0xD3, 0x5A, 0x3D, 0x02, 0x01, 0x0A, 0x00,
+  CheckFrame(frames[2], {0xA5, 0xD3, 0x5A, 0x3D, 0x02, 0x01, 0x0A, 0x00,
                          0x05, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00,
                          0x00, 0x01, 0x09});
-  CheckFrame(frames[2], {0xA5, 0xD3, 0x5A, 0x3D, 0x03, 0x01, 0x01, 0x00,
+  CheckFrame(frames[3], {0xA5, 0xD3, 0x5A, 0x3D, 0x03, 0x01, 0x01, 0x00,
                          0x06, 0x05});
+}
+
+void PollStopResponseCannotAdvanceVersionHandshake() {
+  ayn::rsinput::Q9Handshake handshake;
+  handshake.Start();
+
+  const auto poll_stop = MakeHandshakeResponse(0x20, 0x01, 0x05);
+  handshake.Feed(poll_stop.data(), poll_stop.size());
+  CHECK(handshake.state() == ayn::rsinput::HandshakeState::kAwaitingType1);
+  CHECK(handshake.stats().accepted_responses == 0);
+  CHECK(handshake.stats().unrelated_packets == 1);
+
+  const auto version = MakeHandshakeResponse(0x21, 0x01, 0x01);
+  handshake.Feed(version.data(), version.size());
+  CHECK(handshake.state() == ayn::rsinput::HandshakeState::kSendConfiguration);
+  CHECK(handshake.stats().accepted_responses == 1);
 }
 
 void DeviceGateIsExactAndFailClosed() {
@@ -191,6 +221,8 @@ int main() {
   const std::vector<std::pair<std::string, void (*)()>> tests = {
       {"exact Q9 handshake frames are encoded",
        ExactQ9HandshakeFramesAreEncoded},
+      {"poll stop response cannot advance version handshake",
+       PollStopResponseCannotAdvanceVersionHandshake},
       {"device gate is exact and fail closed", DeviceGateIsExactAndFailClosed},
       {"unsupported device cannot enter runtime I/O",
        UnsupportedDeviceCannotEnterRuntimeIo},

@@ -68,6 +68,7 @@ struct HandshakeHarness {
   std::vector<HandshakeRead> reads;
   std::vector<size_t> writes_seen_by_read;
   std::vector<uint32_t> requested_timeouts_ms;
+  bool allow_late_data = false;
   size_t fail_frame_wait_at = static_cast<size_t>(-1);
   std::vector<uint32_t> frame_waits_ms;
 };
@@ -122,6 +123,7 @@ bool WaitBeforeHandshakeFrame(void* context, uint32_t delay_ms) {
     return false;
   }
   harness->frame_waits_ms.push_back(delay_ms);
+  harness->now_ms += delay_ms;
   return true;
 }
 
@@ -137,12 +139,23 @@ ayn::rsinput::HandshakeReadResult ReadHandshakeBytes(
     return ayn::rsinput::HandshakeReadResult::kTimeout;
   }
 
-  const HandshakeRead& read = harness->reads[harness->read_index++];
+  HandshakeRead& read = harness->reads[harness->read_index];
+  if (harness->allow_late_data &&
+      read.result == ayn::rsinput::HandshakeReadResult::kData) {
+    harness->now_ms += read.elapsed_ms;
+    ++harness->read_index;
+    CHECK(read.bytes.size() <= capacity);
+    std::copy(read.bytes.begin(), read.bytes.end(), data);
+    *size = read.bytes.size();
+    return read.result;
+  }
   harness->now_ms += std::min(read.elapsed_ms, timeout_ms);
   if (read.elapsed_ms > timeout_ms) {
+    read.elapsed_ms -= timeout_ms;
     *size = 0;
     return ayn::rsinput::HandshakeReadResult::kTimeout;
   }
+  ++harness->read_index;
   CHECK(read.bytes.size() <= capacity);
   std::copy(read.bytes.begin(), read.bytes.end(), data);
   *size = read.bytes.size();
@@ -170,6 +183,13 @@ std::vector<uint8_t> MakeResponseFrame(uint8_t sequence, uint8_t type,
   return frame;
 }
 
+std::vector<uint8_t> MakePollStopAndTypeOneResponse(uint8_t sequence) {
+  auto response = MakeResponseFrame(sequence, 0x01, {0x05});
+  const auto type_one = MakeResponseFrame(sequence + 1, 0x01, {0x01});
+  response.insert(response.end(), type_one.begin(), type_one.end());
+  return response;
+}
+
 ayn::rsinput::HandshakeCallbacks MakeHandshakeCallbacks(
     HandshakeHarness* harness) {
   return {HandshakeStopRequested, WriteHandshakeFrame, ReadHandshakeBytes,
@@ -178,10 +198,12 @@ ayn::rsinput::HandshakeCallbacks MakeHandshakeCallbacks(
 
 void CheckQ9HandshakeWrites(const HandshakeHarness& harness) {
   const auto expected = ayn::rsinput::BuildQ9HandshakeFrames();
-  CHECK(harness.writes.size() == expected.size());
-  CHECK(std::equal(harness.writes.begin(), harness.writes.end(),
-                   expected.begin()));
-  CHECK((harness.frame_waits_ms == std::vector<uint32_t>{100, 100}));
+  CHECK(harness.writes.size() == expected.size() + 1);
+  CHECK(harness.writes[0] == expected[0]);
+  CHECK(harness.writes[1] == expected[0]);
+  CHECK(std::equal(harness.writes.begin() + 2, harness.writes.end(),
+                   expected.begin() + 1));
+  CHECK(harness.frame_waits_ms.empty());
 }
 
 int OpenSessionUart(void* context) {
@@ -275,8 +297,12 @@ void Q9HandshakeWaitsForEachResponseBeforeAdvancing() {
                                               type_one.end() - 1);
   const std::vector<uint8_t> type_one_checksum(type_one.end() - 1,
                                                 type_one.end());
+  auto poll_stop_and_prefix = MakeResponseFrame(0x3f, 0x01, {0x05});
+  poll_stop_and_prefix.insert(poll_stop_and_prefix.end(),
+                              type_one_prefix.begin(), type_one_prefix.end());
   harness.reads = {
-      {ayn::rsinput::HandshakeReadResult::kData, type_one_prefix, 10},
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
+      {ayn::rsinput::HandshakeReadResult::kData, poll_stop_and_prefix, 10},
       {ayn::rsinput::HandshakeReadResult::kData, type_one_checksum, 10},
       {ayn::rsinput::HandshakeReadResult::kData, type_two, 10},
   };
@@ -286,18 +312,20 @@ void Q9HandshakeWaitsForEachResponseBeforeAdvancing() {
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
   CheckQ9HandshakeWrites(harness);
-  CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 1, 3}));
+  CHECK((harness.writes_seen_by_read ==
+         std::vector<size_t>{1, 3, 3, 3, 3, 4}));
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
   CHECK(diagnostics.expected_response_type == 0);
 }
 
 void BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead() {
   HandshakeHarness harness;
-  auto responses = MakeResponseFrame(0x50, 0x01, {0x01});
+  auto responses = MakePollStopAndTypeOneResponse(0x4f);
   const auto type_two =
       MakeResponseFrame(0x51, 0x02, std::vector<uint8_t>(14, 0));
   responses.insert(responses.end(), type_two.begin(), type_two.end());
   harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData, responses, 10},
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
@@ -306,18 +334,23 @@ void BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead() {
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
   CheckQ9HandshakeWrites(harness);
-  CHECK((harness.writes_seen_by_read == std::vector<size_t>{1}));
+  CHECK((harness.writes_seen_by_read ==
+         std::vector<size_t>{1, 3, 3, 4}));
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
   CHECK(diagnostics.stats.accepted_responses == 2);
 }
 
 void PreconfigurationTypeTwoCannotCompleteHandshake() {
   HandshakeHarness harness;
-  auto responses = MakeResponseFrame(0x50, 0x02,
-                                     std::vector<uint8_t>(14, 0));
+  auto responses = MakeResponseFrame(0x4f, 0x01, {0x05});
+  const auto early_type_two =
+      MakeResponseFrame(0x50, 0x02, std::vector<uint8_t>(14, 0));
+  responses.insert(responses.end(), early_type_two.begin(),
+                   early_type_two.end());
   const auto type_one = MakeResponseFrame(0x51, 0x01, {0x01});
   responses.insert(responses.end(), type_one.begin(), type_one.end());
   harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData, responses, 10},
       {ayn::rsinput::HandshakeReadResult::kData,
        MakeResponseFrame(0x52, 0x02, std::vector<uint8_t>(14, 0)), 10},
@@ -328,9 +361,10 @@ void PreconfigurationTypeTwoCannotCompleteHandshake() {
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
   CheckQ9HandshakeWrites(harness);
-  CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 3}));
+  CHECK((harness.writes_seen_by_read ==
+         std::vector<size_t>{1, 3, 3, 3, 4}));
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
-  CHECK(diagnostics.stats.unrelated_packets == 1);
+  CHECK(diagnostics.stats.unrelated_packets == 2);
 }
 
 void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
@@ -338,6 +372,7 @@ void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
   auto malformed = MakeResponseFrame(0x60, 0x01, {0x01});
   malformed.back() ^= 0x80;
   harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData, malformed, 10},
       {ayn::rsinput::HandshakeReadResult::kData,
        MakeResponseFrame(0x61, 0x02, std::vector<uint8_t>(14, 0)), 10},
@@ -348,21 +383,25 @@ void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kFailed);
-  CHECK(harness.writes.size() == 1);
+  const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[1]) ==
+        1);
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[0]) >
+        2);
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kFailed);
   CHECK(diagnostics.expected_response_type == 0x01);
   CHECK(diagnostics.failure == ayn::rsinput::HandshakeFailure::kTimeout);
   CHECK(diagnostics.stats.malformed_frames >= 1);
   CHECK(diagnostics.stats.unrelated_packets == 1);
-  CHECK((harness.requested_timeouts_ms ==
-         std::vector<uint32_t>{500, 490, 480}));
+  CHECK(harness.requested_timeouts_ms.front() == 100);
 }
 
 void MissingTypeTwoResponseFailsClosedAfterConfiguration() {
   HandshakeHarness harness;
   harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData,
-       MakeResponseFrame(0x70, 0x01, {0x01}), 10},
+       MakePollStopAndTypeOneResponse(0x6f), 10},
       {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 500},
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
@@ -376,22 +415,71 @@ void MissingTypeTwoResponseFailsClosedAfterConfiguration() {
   CHECK(diagnostics.failure == ayn::rsinput::HandshakeFailure::kTimeout);
 }
 
-void ConfigurationFrameWaitFailureFailsClosed() {
+void RawPollingContinuesWithoutStopAndVersionIsSentOnce() {
   HandshakeHarness harness;
-  harness.fail_frame_wait_at = 0;
   harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData,
        MakeResponseFrame(0x70, 0x01, {0x01}), 10},
+      {ayn::rsinput::HandshakeReadResult::kData,
+       MakeResponseFrame(0x71, 0x02, std::vector<uint8_t>(14, 0)), 10},
+  };
+  ayn::rsinput::HandshakeDiagnostics diagnostics;
+
+  CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
+                                     100, &diagnostics) ==
+        ayn::rsinput::StartupResult::kCompleted);
+  const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[0]) ==
+        4);
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[1]) ==
+        1);
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[2]) ==
+        1);
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[3]) ==
+        1);
+  CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
+}
+
+void LateReadCallbackDataCannotBypassResponseDeadline() {
+  HandshakeHarness harness;
+  harness.allow_late_data = true;
+  harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
+      {ayn::rsinput::HandshakeReadResult::kData,
+       MakeResponseFrame(0x70, 0x01, {0x01}), 501},
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kFailed);
-  CHECK(harness.writes.size() == 1);
+  const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[1]) ==
+        1);
+  CHECK(std::count(harness.writes.begin(), harness.writes.end(), frames[2]) ==
+        0);
+  CHECK(diagnostics.failure == ayn::rsinput::HandshakeFailure::kTimeout);
+}
+
+void ReadDrivenCadenceDoesNotRequireBlockingWaitCallback() {
+  HandshakeHarness harness;
+  harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
+      {ayn::rsinput::HandshakeReadResult::kData,
+       MakePollStopAndTypeOneResponse(0x6f), 10},
+      {ayn::rsinput::HandshakeReadResult::kData,
+       MakeResponseFrame(0x71, 0x02, std::vector<uint8_t>(14, 0)), 10},
+  };
+  auto callbacks = MakeHandshakeCallbacks(&harness);
+  callbacks.wait_before_frame = nullptr;
+  ayn::rsinput::HandshakeDiagnostics diagnostics;
+
+  CHECK(ayn::rsinput::RunQ9Handshake(callbacks, 500, 100, &diagnostics) ==
+        ayn::rsinput::StartupResult::kCompleted);
+  CheckQ9HandshakeWrites(harness);
   CHECK(harness.frame_waits_ms.empty());
-  CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kFailed);
-  CHECK(diagnostics.failure == ayn::rsinput::HandshakeFailure::kWait);
+  CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
 }
 
 void OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff() {
@@ -543,8 +631,12 @@ int main() {
        MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout},
       {"missing type two response fails closed after configuration",
        MissingTypeTwoResponseFailsClosedAfterConfiguration},
-      {"configuration frame wait failure fails closed",
-       ConfigurationFrameWaitFailureFailsClosed},
+      {"raw polling continues without stop and version is sent once",
+       RawPollingContinuesWithoutStopAndVersionIsSentOnce},
+      {"late read callback data cannot bypass response deadline",
+       LateReadCallbackDataCannotBypassResponseDeadline},
+      {"read-driven cadence does not require blocking wait callback",
+       ReadDrivenCadenceDoesNotRequireBlockingWaitCallback},
       {"power-on failure prevents UART open and handshake",
        PowerOnFailurePreventsUartOpenAndHandshake},
       {"owned power is released once when cleanup is safe",

@@ -46,7 +46,18 @@ echo "CXX=$CXX"
   -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I"$ROOT/include" \
+  "$ROOT/src/rsinput_poll.cpp" \
+  "$ROOT/tests/rsinput_poll_test.cpp" \
+  -o "$BUILD_DIR/rsinput_poll_test"
+"$BUILD_DIR/rsinput_poll_test"
+
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
   "$ROOT/src/rsinput_parser.cpp" \
+  "$ROOT/src/rsinput_poll.cpp" \
   "$ROOT/src/rsinput_protocol.cpp" \
   "$ROOT/src/rsinput_lifecycle.cpp" \
   "$ROOT/tests/rsinput_lifecycle_test.cpp" \
@@ -136,9 +147,42 @@ if ! grep -qx 'service rsinputd /system/bin/rsinputd' "$ROOT/rsinputd.rc" ||
   exit 1
 fi
 
+selftest_module="$(sed -n \
+  '/^cc_test {/,/^}/p' "$ROOT/Android.bp" |
+  sed -n '/name: "ayn_rsinput_selftest"/,/^}/p')"
+if ! printf '%s\n' "$selftest_module" | grep -qx '    name: "ayn_rsinput_selftest",' ||
+   ! printf '%s\n' "$selftest_module" | grep -qx '    srcs: \["tools/rsinput_selftest.cpp"\],' ||
+   printf '%s\n' "$selftest_module" | grep -Eq 'init_rc|required|product_packages'; then
+  echo "error: RSInput selftest must remain manually built and product-excluded" >&2
+  exit 1
+fi
+
+if grep -Eq '/dev/tty|/dev/rscom|/sys/|mcupower|gpio|fan' \
+     "$ROOT/tools/rsinput_selftest.cpp"; then
+  echo "error: RSInput selftest must not touch UART, MCU, sysfs, or fan controls" >&2
+  exit 1
+fi
+
 if ! grep -qx 'on boot && property:ro.product.device=odin2_mini' "$ROOT/rsinputd.rc" ||
    ! grep -qx '    start rsinputd' "$ROOT/rsinputd.rc"; then
   echo "error: rsinputd must start once at boot before Setup Wizard on Odin2 Mini" >&2
+  exit 1
+fi
+
+runtime_callbacks="$(sed -n \
+  '/const ayn::rsinput::LifecycleCallbacks callbacks = {/,/};/p' \
+  "$ROOT/src/rsinputd.cpp")"
+if ! printf '%s\n' "$runtime_callbacks" | grep -q \
+     'LeaveRuntimeMcuPowerUnchanged' ||
+   printf '%s\n' "$runtime_callbacks" | grep -Eq \
+     'PowerOnRuntimeMcu|PowerOffRuntimeMcu|SettleAfterMcuPowerOn'; then
+  echo "error: stock startup must not toggle or settle MCU power" >&2
+  exit 1
+fi
+
+if ! grep -q 'read(uart_fd, data, std::min<size_t>(capacity, 1))' \
+     "$ROOT/src/rsinputd.cpp"; then
+  echo "error: stock VMIN must not block the read-driven startup TX cadence" >&2
   exit 1
 fi
 

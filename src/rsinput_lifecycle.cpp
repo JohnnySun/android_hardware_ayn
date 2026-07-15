@@ -2,6 +2,7 @@
 
 #include "ayn/rsinput_lifecycle.h"
 
+#include "ayn/rsinput_poll.h"
 #include "ayn/rsinput_protocol.h"
 
 #include <algorithm>
@@ -59,7 +60,6 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
   };
   if (callbacks.stop_requested == nullptr ||
       callbacks.write_frame == nullptr || callbacks.read_bytes == nullptr ||
-      callbacks.wait_before_frame == nullptr ||
       callbacks.monotonic_ms == nullptr || response_timeout_ms == 0 ||
       configuration_frame_delay_ms == 0) {
     failure = HandshakeFailure::kInvalidConfiguration;
@@ -71,6 +71,7 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
   }
 
   const auto frames = BuildQ9HandshakeFrames();
+  StartupPollRxDetector poll_detector;
   handshake.Start();
   if (!callbacks.write_frame(callbacks.context, frames[0].data(),
                              frames[0].size())) {
@@ -79,40 +80,18 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
     return finish(StartupResult::kFailed);
   }
 
-  uint64_t phase_started_ms = callbacks.monotonic_ms(callbacks.context);
+  bool version_sent = false;
+  size_t next_configuration_frame = 2;
+  uint64_t next_tx_ms =
+      callbacks.monotonic_ms(callbacks.context) +
+      configuration_frame_delay_ms;
+  uint64_t response_deadline_ms = std::numeric_limits<uint64_t>::max();
   std::array<uint8_t, 256> buffer{};
   while (true) {
     if (callbacks.stop_requested(callbacks.context)) {
       return finish(StartupResult::kStopped);
     }
 
-    if (handshake.state() == HandshakeState::kSendConfiguration) {
-      for (size_t index = 1; index < frames.size(); ++index) {
-        if (callbacks.stop_requested(callbacks.context)) {
-          return finish(StartupResult::kStopped);
-        }
-        if (!callbacks.wait_before_frame(callbacks.context,
-                                         configuration_frame_delay_ms)) {
-          if (callbacks.stop_requested(callbacks.context)) {
-            return finish(StartupResult::kStopped);
-          }
-          failure = HandshakeFailure::kWait;
-          handshake.Fail();
-          return finish(StartupResult::kFailed);
-        }
-        if (!callbacks.write_frame(callbacks.context, frames[index].data(),
-                                   frames[index].size())) {
-          failure = HandshakeFailure::kWrite;
-          handshake.Fail();
-          return finish(StartupResult::kFailed);
-        }
-      }
-      handshake.ConfigurationSent();
-      phase_started_ms = callbacks.monotonic_ms(callbacks.context);
-      if (handshake.state() == HandshakeState::kInitialized) {
-        return finish(StartupResult::kCompleted);
-      }
-    }
     if (handshake.state() == HandshakeState::kInitialized) {
       return finish(StartupResult::kCompleted);
     }
@@ -122,15 +101,56 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
     }
 
     const uint64_t now_ms = callbacks.monotonic_ms(callbacks.context);
-    const uint64_t elapsed_ms = now_ms - phase_started_ms;
-    if (elapsed_ms >= response_timeout_ms) {
+    if (response_deadline_ms != std::numeric_limits<uint64_t>::max() &&
+        now_ms >= response_deadline_ms) {
       failure = HandshakeFailure::kTimeout;
       handshake.Fail();
       return finish(StartupResult::kFailed);
     }
-    const uint64_t remaining_ms = response_timeout_ms - elapsed_ms;
+
+    if (now_ms >= next_tx_ms) {
+      if (!poll_detector.poll_stop_requested() &&
+          !callbacks.write_frame(callbacks.context, frames[0].data(),
+                                 frames[0].size())) {
+        failure = HandshakeFailure::kWrite;
+        handshake.Fail();
+        return finish(StartupResult::kFailed);
+      }
+
+      if (!version_sent) {
+        if (!callbacks.write_frame(callbacks.context, frames[1].data(),
+                                   frames[1].size())) {
+          failure = HandshakeFailure::kWrite;
+          handshake.Fail();
+          return finish(StartupResult::kFailed);
+        }
+        version_sent = true;
+        response_deadline_ms = now_ms + response_timeout_ms;
+      } else if (handshake.state() == HandshakeState::kSendConfiguration &&
+                 next_configuration_frame < frames.size()) {
+        const auto& frame = frames[next_configuration_frame++];
+        if (!callbacks.write_frame(callbacks.context, frame.data(),
+                                   frame.size())) {
+          failure = HandshakeFailure::kWrite;
+          handshake.Fail();
+          return finish(StartupResult::kFailed);
+        }
+        if (next_configuration_frame == frames.size()) {
+          handshake.ConfigurationSent();
+          response_deadline_ms = now_ms + response_timeout_ms;
+        }
+      }
+      next_tx_ms = now_ms + configuration_frame_delay_ms;
+      continue;
+    }
+
+    uint64_t wake_at_ms = next_tx_ms;
+    if (response_deadline_ms != std::numeric_limits<uint64_t>::max()) {
+      wake_at_ms = std::min(wake_at_ms, response_deadline_ms);
+    }
+    const uint64_t wait_ms = wake_at_ms - now_ms;
     const uint32_t read_timeout_ms = static_cast<uint32_t>(std::min<uint64_t>(
-        remaining_ms, std::numeric_limits<uint32_t>::max()));
+        wait_ms, std::numeric_limits<uint32_t>::max()));
     size_t received_size = 0;
     const HandshakeReadResult read_result = callbacks.read_bytes(
         callbacks.context, buffer.data(), buffer.size(), &received_size,
@@ -138,15 +158,39 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
     if (callbacks.stop_requested(callbacks.context)) {
       return finish(StartupResult::kStopped);
     }
-    if (read_result != HandshakeReadResult::kData || received_size == 0 ||
-        received_size > buffer.size()) {
-      failure = read_result == HandshakeReadResult::kTimeout
-                    ? HandshakeFailure::kTimeout
-                    : HandshakeFailure::kRead;
+    if (response_deadline_ms != std::numeric_limits<uint64_t>::max() &&
+        callbacks.monotonic_ms(callbacks.context) >= response_deadline_ms) {
+      failure = HandshakeFailure::kTimeout;
       handshake.Fail();
       return finish(StartupResult::kFailed);
     }
-    handshake.Feed(buffer.data(), received_size);
+    if (read_result == HandshakeReadResult::kTimeout) {
+      continue;
+    }
+    if (read_result != HandshakeReadResult::kData || received_size == 0 ||
+        received_size > buffer.size()) {
+      failure = HandshakeFailure::kRead;
+      handshake.Fail();
+      return finish(StartupResult::kFailed);
+    }
+
+    poll_detector.Feed(buffer.data(), received_size);
+    const uint64_t immediate_polls =
+        poll_detector.consume_immediate_poll_requests();
+    for (uint64_t index = 0; index < immediate_polls; ++index) {
+      if (!callbacks.write_frame(callbacks.context, frames[0].data(),
+                                 frames[0].size())) {
+        failure = HandshakeFailure::kWrite;
+        handshake.Fail();
+        return finish(StartupResult::kFailed);
+      }
+    }
+    if (version_sent) {
+      handshake.Feed(buffer.data(), received_size);
+      if (handshake.state() == HandshakeState::kSendConfiguration) {
+        response_deadline_ms = std::numeric_limits<uint64_t>::max();
+      }
+    }
   }
 }
 

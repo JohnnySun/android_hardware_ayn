@@ -10,6 +10,8 @@ namespace ayn::rsinput {
 
 constexpr uint8_t kCmdCommod = 0x01;
 constexpr uint8_t kCmdStatus = 0x02;
+constexpr std::array<uint8_t, 6> kQ9RawPoll = {0x2e, 0x01, 0x02,
+                                               0x0a, 0x01, 0x00};
 constexpr std::array<uint8_t, 1> kQ9StartPayload = {0x06};
 constexpr std::array<uint8_t, 10> kSetParametersPayload = {
     0x05, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x01,
@@ -52,6 +54,6 @@ class Q9Handshake {
   HandshakeStats stats_{};
 };
 
-std::array<std::vector<uint8_t>, 3> BuildQ9HandshakeFrames();
+std::array<std::vector<uint8_t>, 4> BuildQ9HandshakeFrames();
 
 }  // namespace ayn::rsinput

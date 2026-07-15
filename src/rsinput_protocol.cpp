@@ -152,8 +152,13 @@ void Q9Handshake::ProcessBuffered() {
     }
 
     const uint8_t response_type = buffer_[5];
+    const bool expected_type = response_type == expected_response_type_;
+    const bool expected_payload =
+        state_ == HandshakeState::kAwaitingType1
+            ? payload_size >= 1 && buffer_[8] == kCmdCommod
+            : payload_size == Parser::kStatusPayloadSize;
     discard_prefix(frame_size);
-    if (response_type != expected_response_type_) {
+    if (!expected_type || !expected_payload) {
       ++stats_.unrelated_packets;
       continue;
     }
@@ -169,8 +174,9 @@ void Q9Handshake::ProcessBuffered() {
   }
 }
 
-std::array<std::vector<uint8_t>, 3> BuildQ9HandshakeFrames() {
-  return {BuildCommandFrame(1, kQ9StartPayload.data(),
+std::array<std::vector<uint8_t>, 4> BuildQ9HandshakeFrames() {
+  return {std::vector<uint8_t>(kQ9RawPoll.begin(), kQ9RawPoll.end()),
+          BuildCommandFrame(1, kQ9StartPayload.data(),
                             kQ9StartPayload.size()),
           BuildCommandFrame(2, kSetParametersPayload.data(),
                             kSetParametersPayload.size()),
