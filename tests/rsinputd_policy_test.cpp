@@ -173,6 +173,13 @@ void StatusBitsMapToTheRequiredLinuxCodes() {
 }
 
 void Odin2AxisAndTriggerPolicyIsPreserved() {
+  CHECK(ayn::rsinput::kStickAxisMin == -0x500);
+  CHECK(ayn::rsinput::kStickAxisMax == 0x500);
+  CHECK(ayn::rsinput::kStickAxisFlat == 0x80);
+  CHECK(ayn::rsinput::kTriggerAxisMin == 0);
+  CHECK(ayn::rsinput::kTriggerAxisMax == 0x610);
+  CHECK(ayn::rsinput::kTriggerAxisFlat == 30);
+
   Status status;
   status.left_x = -32768;
   status.left_y = 123;

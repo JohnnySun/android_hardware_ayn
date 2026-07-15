@@ -38,6 +38,15 @@ constexpr uint16_t kAbsRx = 0x03;
 constexpr uint16_t kAbsRy = 0x04;
 constexpr uint16_t kAbsRz = 0x05;
 
+// The Odin2 Mini MCU reports approximately +/-0x500 at stick end stops.
+// Keep the declared uinput range in the same units as the status protocol.
+constexpr int32_t kStickAxisMin = -0x500;
+constexpr int32_t kStickAxisMax = 0x500;
+constexpr int32_t kStickAxisFlat = 0x80;
+constexpr int32_t kTriggerAxisMin = 0;
+constexpr int32_t kTriggerAxisMax = 0x610;
+constexpr int32_t kTriggerAxisFlat = 30;
+
 struct InputEvent {
   uint16_t type;
   uint16_t code;

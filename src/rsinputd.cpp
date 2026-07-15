@@ -199,12 +199,14 @@ bool CreateUinputGamepad(int fd) {
 
   for (uint16_t axis : {ayn::rsinput::kAbsX, ayn::rsinput::kAbsY,
                         ayn::rsinput::kAbsRx, ayn::rsinput::kAbsRy}) {
-    device.absmin[axis] = -32768;
-    device.absmax[axis] = 32768;
+    device.absmin[axis] = ayn::rsinput::kStickAxisMin;
+    device.absmax[axis] = ayn::rsinput::kStickAxisMax;
+    device.absflat[axis] = ayn::rsinput::kStickAxisFlat;
   }
   for (uint16_t axis : {ayn::rsinput::kAbsZ, ayn::rsinput::kAbsRz}) {
-    device.absmin[axis] = 0;
-    device.absmax[axis] = 0x610;
+    device.absmin[axis] = ayn::rsinput::kTriggerAxisMin;
+    device.absmax[axis] = ayn::rsinput::kTriggerAxisMax;
+    device.absflat[axis] = ayn::rsinput::kTriggerAxisFlat;
   }
 
   if (!WriteAll(fd, &device, sizeof(device))) {
