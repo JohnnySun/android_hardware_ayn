@@ -32,7 +32,6 @@ constexpr char kUartPath[] = "/dev/ttyHS1";
 constexpr char kUinputPath[] = "/dev/uinput";
 constexpr char kGamepadName[] = "AYN Odin2 Gamepad";
 constexpr uint32_t kHandshakeResponseTimeoutMs = 1000;
-constexpr uint32_t kColdBootMcuPowerSettleMs = 200;
 constexpr uint32_t kMcuCommandIntervalMs = 100;
 constexpr useconds_t kUartByteIntervalUs = 100;
 constexpr uint32_t kInitialRetryDelayMs = 250;
@@ -106,43 +105,6 @@ bool WriteAll(int fd, const void* data, size_t size) {
     size -= static_cast<size_t>(written);
   }
   return true;
-}
-
-bool WriteMcuPowerControl(void*, const char* path, const uint8_t* data,
-                          size_t size) {
-  const int fd = open(path, O_WRONLY | O_CLOEXEC);
-  if (fd < 0) {
-    PLOG(ERROR) << "cannot open RSInput MCU power control";
-    return false;
-  }
-  const bool written = WriteAll(fd, data, size);
-  if (close(fd) != 0) {
-    PLOG(ERROR) << "cannot close RSInput MCU power control";
-    return false;
-  }
-  return written;
-}
-
-bool PrimeColdBootMcuPower() {
-  if (!ayn::rsinput::WriteMcuPowerState(WriteMcuPowerControl, nullptr, true)) {
-    LOG(ERROR) << "cannot prime RSInput MCU power for cold boot";
-    return false;
-  }
-
-  uint32_t remaining_ms = kColdBootMcuPowerSettleMs;
-  while (remaining_ms != 0 && g_stop_requested == 0) {
-    const uint32_t wait_ms = std::min(remaining_ms, kStopCheckIntervalMs);
-    const int result = poll(nullptr, 0, static_cast<int>(wait_ms));
-    if (result < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      PLOG(ERROR) << "RSInput cold-boot MCU power settle failed";
-      return false;
-    }
-    remaining_ms -= wait_ms;
-  }
-  return g_stop_requested == 0;
 }
 
 bool LeaveRuntimeMcuPowerUnchanged(void*) {
@@ -537,9 +499,6 @@ void WaitBeforeRetry(void*, uint32_t delay_ms) {
 
 int RunSupportedDevice(void*) {
   if (!InstallStopHandlers()) {
-    return EXIT_FAILURE;
-  }
-  if (!PrimeColdBootMcuPower()) {
     return EXIT_FAILURE;
   }
 
