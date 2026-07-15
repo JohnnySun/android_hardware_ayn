@@ -155,7 +155,7 @@ void StatusBitsMapToTheRequiredLinuxCodes() {
   const std::array<uint16_t, 16> expected_codes = {
       ayn::rsinput::kBtnDpadUp,   ayn::rsinput::kBtnDpadDown,
       ayn::rsinput::kBtnDpadLeft, ayn::rsinput::kBtnDpadRight,
-      ayn::rsinput::kBtnNorth,    ayn::rsinput::kBtnWest,
+      ayn::rsinput::kBtnWest,     ayn::rsinput::kBtnNorth,
       ayn::rsinput::kBtnEast,     ayn::rsinput::kBtnSouth,
       ayn::rsinput::kBtnTl,       ayn::rsinput::kBtnTr,
       ayn::rsinput::kBtnSelect,   ayn::rsinput::kBtnStart,
@@ -169,6 +169,21 @@ void StatusBitsMapToTheRequiredLinuxCodes() {
     const int32_t expected_value =
         static_cast<int32_t>((status.buttons >> bit) & 1u);
     CHECK(events[bit].value == expected_value);
+  }
+}
+
+void FaceButtonBitsMatchThePhysicalOdinLabels() {
+  const std::array<uint16_t, 4> expected_codes = {
+      ayn::rsinput::kBtnWest, ayn::rsinput::kBtnNorth,
+      ayn::rsinput::kBtnEast, ayn::rsinput::kBtnSouth,
+  };
+
+  for (size_t index = 0; index < expected_codes.size(); ++index) {
+    Status status;
+    status.buttons = static_cast<uint16_t>(1u << (index + 4));
+    const auto events = MapStatusToEvents(status);
+    CHECK(events[index + 4].code == expected_codes[index]);
+    CHECK(events[index + 4].value == 1);
   }
 }
 
@@ -251,6 +266,8 @@ int main() {
        UnsupportedDeviceCannotEnterRuntimeIo},
       {"status bits map to the required Linux codes",
        StatusBitsMapToTheRequiredLinuxCodes},
+      {"face button bits match the physical Odin labels",
+       FaceButtonBitsMatchThePhysicalOdinLabels},
       {"Odin2 axis and trigger policy is preserved",
        Odin2AxisAndTriggerPolicyIsPreserved},
       {"trigger policy clamps both sides", TriggerPolicyClampsBothSides},
