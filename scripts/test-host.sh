@@ -110,6 +110,26 @@ echo "CXX=$CXX"
   -o "$BUILD_DIR/fan_status_test"
 "$BUILD_DIR/fan_status_test"
 
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
+  "$ROOT/src/performance_service.cpp" \
+  "$ROOT/tests/performance_service_test.cpp" \
+  -o "$BUILD_DIR/performance_service_test"
+"$BUILD_DIR/performance_service_test"
+
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
+  "$ROOT/src/performance_adapter.cpp" \
+  "$ROOT/tests/performance_adapter_test.cpp" \
+  -o "$BUILD_DIR/performance_adapter_test"
+"$BUILD_DIR/performance_adapter_test"
+
 if grep -Eq \
      'SysfsWriter|writer_context|write_file|::write|(^|[^[:alnum:]_])p?write[[:space:]]*\(' \
      "$ROOT/include/ayn/fan_status.h" "$ROOT/src/fan_status.cpp"; then
@@ -248,5 +268,78 @@ if ! grep -q 'com.ayn.fan.IOdinFan/default' "$ROOT/src/odinfand.cpp" ||
    ! grep -q 'AServiceManager_addService' "$ROOT/src/odinfand.cpp" ||
    grep -Eq 'SetProperty|socket\(|AF_UNIX' "$ROOT/src/odinfand.cpp"; then
   echo "error: odinfand must register Binder directly without property or UDS control" >&2
+  exit 1
+fi
+
+if [ -e "$ROOT/odinperformanced.rc" ]; then
+  echo "error: performance scaffolding must not install an init rc" >&2
+  exit 1
+fi
+
+performance_module="$(sed -n \
+  '/^[[:space:]]*cc_binary[[:space:]]*{/,/^}/p' "$ROOT/Android.bp" |
+  sed -n '/name: "odinperformanced"/,/^}/p')"
+if ! printf '%s\n' "$performance_module" | grep -qx \
+     '    name: "odinperformanced",' ||
+   printf '%s\n' "$performance_module" | grep -q 'init_rc' ||
+   printf '%s\n' "$performance_module" | grep -Eq \
+     '^[[:space:]]*vendor:[[:space:]]*true'; then
+  echo "error: odinperformanced must remain a system-only unwired binary" >&2
+  exit 1
+fi
+
+if ! grep -q 'name: "com.ayn.performance"' "$ROOT/Android.bp" ||
+   ! grep -q 'local_include_dir: "aidl"' "$ROOT/Android.bp" ||
+   ! grep -q 'unstable: true' "$ROOT/Android.bp" ||
+   ! grep -qx 'interface IOdinPerformance {' \
+      "$ROOT/aidl/com/ayn/performance/IOdinPerformance.aidl" ||
+   ! grep -qx '    PerformanceResponse getStatus();' \
+      "$ROOT/aidl/com/ayn/performance/IOdinPerformance.aidl" ||
+   ! grep -qx '    PerformanceResponse setMode(int mode);' \
+      "$ROOT/aidl/com/ayn/performance/IOdinPerformance.aidl"; then
+  echo "error: private unstable performance AIDL contract is incomplete" >&2
+  exit 1
+fi
+
+if grep -Eq 'String.*path|String\[\]|long\[\]|int\[\]' \
+     "$ROOT/aidl/com/ayn/performance/IOdinPerformance.aidl" \
+     "$ROOT/aidl/com/ayn/performance/PerformanceResponse.aidl"; then
+  echo "error: performance callers must not supply paths or raw node values" >&2
+  exit 1
+fi
+
+if ! grep -q 'com.ayn.performance.IOdinPerformance/default' \
+     "$ROOT/src/odinperformanced.cpp" ||
+   ! grep -q 'AServiceManager_addService' "$ROOT/src/odinperformanced.cpp" ||
+   ! grep -q 'ro.product.device' "$ROOT/src/odinperformanced.cpp" ||
+   ! grep -q 'ro.product.name' "$ROOT/src/odinperformanced.cpp" ||
+   ! grep -q 'ro.product.vendor.model' "$ROOT/src/odinperformanced.cpp" ||
+   ! grep -q 'ControlPolicy::ReadOnly' "$ROOT/src/odinperformanced.cpp"; then
+  echo "error: performance daemon registration or exact identity inputs are incomplete" >&2
+  exit 1
+fi
+
+if grep -Eq '(^|[^[:alnum:]_])(system|popen|execl?|execv|chmod|setenforce)[[:space:]]*\(|/bin/(sh|bash)|SetProperty|socket\(' \
+     "$ROOT/include/ayn/performance_service.h" \
+     "$ROOT/include/ayn/performance_adapter.h" \
+     "$ROOT/src/performance_service.cpp" \
+     "$ROOT/src/performance_adapter.cpp" \
+     "$ROOT/src/odinperformanced.cpp"; then
+  echo "error: performance service crossed its fixed sysfs/Binder boundary" >&2
+  exit 1
+fi
+
+if grep -Eq 'WritePosixFile|O_WRONLY|O_RDWR' \
+     "$ROOT/include/ayn/performance_adapter.h" \
+     "$ROOT/src/performance_adapter.cpp" \
+     "$ROOT/src/odinperformanced.cpp"; then
+  echo "error: unwired performance daemon must remain physically read only" >&2
+  exit 1
+fi
+
+if grep -Eq 'persist\.vendor\.debug\.mode|/system/bin/pservice|1228800|2476800' \
+     "$ROOT/src/odinperformanced.cpp" \
+     "$ROOT/src/performance_adapter.cpp"; then
+  echo "error: scaffolding must not embed or activate the stock writer policy" >&2
   exit 1
 fi
