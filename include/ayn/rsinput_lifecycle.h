@@ -20,6 +20,7 @@ using FrameWriter = bool (*)(void* context, const uint8_t* data, size_t size);
 using McuPowerWriter = bool (*)(void* context, const char* path,
                                 const uint8_t* data, size_t size);
 using PowerController = bool (*)(void* context);
+using PowerSettler = StartupResult (*)(void* context);
 using ResourceCloser = void (*)(void* context, int fd);
 using SessionInitializer = StartupResult (*)(void* context, int uart_fd);
 using SessionForwarder = StartupResult (*)(void* context, int uart_fd,
@@ -35,12 +36,14 @@ enum class HandshakeReadResult {
 using HandshakeReader = HandshakeReadResult (*)(
     void* context, uint8_t* data, size_t capacity, size_t* size,
     uint32_t timeout_ms);
+using HandshakeWaiter = bool (*)(void* context, uint32_t delay_ms);
 using MonotonicClock = uint64_t (*)(void* context);
 
 struct HandshakeCallbacks {
   StopRequested stop_requested;
   FrameWriter write_frame;
   HandshakeReader read_bytes;
+  HandshakeWaiter wait_before_frame;
   MonotonicClock monotonic_ms;
   void* context;
 };
@@ -49,6 +52,7 @@ enum class HandshakeFailure {
   kNone,
   kInvalidConfiguration,
   kWrite,
+  kWait,
   kRead,
   kTimeout,
   kProtocol,
@@ -68,6 +72,7 @@ struct LifecycleCallbacks {
   // power_on calls do not earn ownership.
   PowerController power_on;
   PowerController power_off;
+  PowerSettler settle_after_power_on;
   UartOpener open_uart;
   UartOpener open_uinput;
   ResourceCloser close_uart;
@@ -91,6 +96,7 @@ StartupResult OpenUartUnlessStopped(StopRequested stop_requested,
 bool WriteMcuPowerState(McuPowerWriter writer, void* context, bool enabled);
 StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
                              uint32_t response_timeout_ms,
+                             uint32_t configuration_frame_delay_ms,
                              HandshakeDiagnostics* diagnostics);
 StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
                                RetryPolicy retry_policy);

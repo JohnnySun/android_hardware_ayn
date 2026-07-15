@@ -42,6 +42,7 @@ bool WriteMcuPowerState(McuPowerWriter writer, void* context, bool enabled) {
 
 StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
                              uint32_t response_timeout_ms,
+                             uint32_t configuration_frame_delay_ms,
                              HandshakeDiagnostics* diagnostics) {
   Q9Handshake handshake;
   HandshakeFailure failure = HandshakeFailure::kNone;
@@ -58,7 +59,9 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
   };
   if (callbacks.stop_requested == nullptr ||
       callbacks.write_frame == nullptr || callbacks.read_bytes == nullptr ||
-      callbacks.monotonic_ms == nullptr || response_timeout_ms == 0) {
+      callbacks.wait_before_frame == nullptr ||
+      callbacks.monotonic_ms == nullptr || response_timeout_ms == 0 ||
+      configuration_frame_delay_ms == 0) {
     failure = HandshakeFailure::kInvalidConfiguration;
     handshake.Fail();
     return finish(StartupResult::kFailed);
@@ -87,6 +90,15 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
       for (size_t index = 1; index < frames.size(); ++index) {
         if (callbacks.stop_requested(callbacks.context)) {
           return finish(StartupResult::kStopped);
+        }
+        if (!callbacks.wait_before_frame(callbacks.context,
+                                         configuration_frame_delay_ms)) {
+          if (callbacks.stop_requested(callbacks.context)) {
+            return finish(StartupResult::kStopped);
+          }
+          failure = HandshakeFailure::kWait;
+          handshake.Fail();
+          return finish(StartupResult::kFailed);
         }
         if (!callbacks.write_frame(callbacks.context, frames[index].data(),
                                    frames[index].size())) {
@@ -142,6 +154,7 @@ StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
                                RetryPolicy retry_policy) {
   if (callbacks.stop_requested == nullptr || callbacks.power_on == nullptr ||
       callbacks.power_off == nullptr || callbacks.open_uart == nullptr ||
+      callbacks.settle_after_power_on == nullptr ||
       callbacks.open_uinput == nullptr || callbacks.close_uart == nullptr ||
       callbacks.close_uinput == nullptr ||
       callbacks.initialize_session == nullptr ||
@@ -182,6 +195,27 @@ StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
         continue;
       }
       power_owned = true;
+      const StartupResult settle_result =
+          callbacks.settle_after_power_on(callbacks.context);
+      if (settle_result == StartupResult::kStopped ||
+          callbacks.stop_requested(callbacks.context)) {
+        return finish(StartupResult::kStopped);
+      }
+      if (settle_result == StartupResult::kFailed) {
+        if (!release_power()) {
+          return StartupResult::kFailed;
+        }
+        callbacks.wait_before_retry(callbacks.context, retry_delay_ms);
+        if (callbacks.stop_requested(callbacks.context)) {
+          return finish(StartupResult::kStopped);
+        }
+        retry_delay_ms = std::min(
+            retry_policy.max_delay_ms,
+            retry_delay_ms > retry_policy.max_delay_ms / 2
+                ? retry_policy.max_delay_ms
+                : retry_delay_ms * 2);
+        continue;
+      }
     }
 
     int uart_fd = -1;
@@ -189,17 +223,17 @@ StartupResult RunReconnectLoop(const LifecycleCallbacks& callbacks,
         callbacks.stop_requested, callbacks.context, callbacks.open_uart,
         callbacks.context, &uart_fd);
 
-    int uinput_fd = -1;
-    if (attempt_result == StartupResult::kCompleted) {
-      attempt_result = OpenUartUnlessStopped(
-          callbacks.stop_requested, callbacks.context, callbacks.open_uinput,
-          callbacks.context, &uinput_fd);
-    }
     bool initialization_failed = false;
     if (attempt_result == StartupResult::kCompleted) {
       attempt_result =
           callbacks.initialize_session(callbacks.context, uart_fd);
       initialization_failed = attempt_result == StartupResult::kFailed;
+    }
+    int uinput_fd = -1;
+    if (attempt_result == StartupResult::kCompleted) {
+      attempt_result = OpenUartUnlessStopped(
+          callbacks.stop_requested, callbacks.context, callbacks.open_uinput,
+          callbacks.context, &uinput_fd);
     }
     if (attempt_result == StartupResult::kCompleted) {
       attempt_result = callbacks.forward_session(callbacks.context, uart_fd,

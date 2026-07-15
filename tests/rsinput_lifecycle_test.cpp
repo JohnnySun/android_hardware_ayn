@@ -41,6 +41,7 @@ struct Harness {
   size_t emit_failures = 0;
   std::vector<uint32_t> retry_delays_ms;
   std::vector<std::pair<bool, size_t>> power_transitions;
+  std::vector<std::string> lifecycle_events;
 };
 
 struct ControlWrite {
@@ -67,6 +68,8 @@ struct HandshakeHarness {
   std::vector<HandshakeRead> reads;
   std::vector<size_t> writes_seen_by_read;
   std::vector<uint32_t> requested_timeouts_ms;
+  size_t fail_frame_wait_at = static_cast<size_t>(-1);
+  std::vector<uint32_t> frame_waits_ms;
 };
 
 bool StopRequested(void* context) {
@@ -77,6 +80,7 @@ bool PowerOn(void* context) {
   auto* harness = static_cast<Harness*>(context);
   ++harness->power_on_calls;
   harness->power_transitions.emplace_back(true, harness->attempt);
+  harness->lifecycle_events.emplace_back("power-on");
   return !harness->fail_power_on;
 }
 
@@ -84,7 +88,15 @@ bool PowerOff(void* context) {
   auto* harness = static_cast<Harness*>(context);
   ++harness->power_off_calls;
   harness->power_transitions.emplace_back(false, harness->attempt);
+  harness->lifecycle_events.emplace_back("power-off");
   return !harness->fail_power_off;
+}
+
+ayn::rsinput::StartupResult SettleAfterPowerOn(void* context) {
+  auto* harness = static_cast<Harness*>(context);
+  harness->lifecycle_events.emplace_back("power-settle");
+  return harness->stop_requested ? ayn::rsinput::StartupResult::kStopped
+                                 : ayn::rsinput::StartupResult::kCompleted;
 }
 
 bool CaptureControlWrite(void* context, const char* path, const uint8_t* data,
@@ -101,6 +113,15 @@ bool HandshakeStopRequested(void* context) {
 bool WriteHandshakeFrame(void* context, const uint8_t* data, size_t size) {
   auto* harness = static_cast<HandshakeHarness*>(context);
   harness->writes.emplace_back(data, data + size);
+  return true;
+}
+
+bool WaitBeforeHandshakeFrame(void* context, uint32_t delay_ms) {
+  auto* harness = static_cast<HandshakeHarness*>(context);
+  if (harness->frame_waits_ms.size() == harness->fail_frame_wait_at) {
+    return false;
+  }
+  harness->frame_waits_ms.push_back(delay_ms);
   return true;
 }
 
@@ -152,7 +173,7 @@ std::vector<uint8_t> MakeResponseFrame(uint8_t sequence, uint8_t type,
 ayn::rsinput::HandshakeCallbacks MakeHandshakeCallbacks(
     HandshakeHarness* harness) {
   return {HandshakeStopRequested, WriteHandshakeFrame, ReadHandshakeBytes,
-          HandshakeNowMs, harness};
+          WaitBeforeHandshakeFrame, HandshakeNowMs, harness};
 }
 
 void CheckQ9HandshakeWrites(const HandshakeHarness& harness) {
@@ -160,16 +181,19 @@ void CheckQ9HandshakeWrites(const HandshakeHarness& harness) {
   CHECK(harness.writes.size() == expected.size());
   CHECK(std::equal(harness.writes.begin(), harness.writes.end(),
                    expected.begin()));
+  CHECK((harness.frame_waits_ms == std::vector<uint32_t>{100, 100}));
 }
 
 int OpenSessionUart(void* context) {
   auto* harness = static_cast<Harness*>(context);
+  harness->lifecycle_events.emplace_back("open-uart");
   ++harness->attempt;
   return harness->attempt == 1 ? -1 : static_cast<int>(100 + harness->attempt);
 }
 
 int OpenSessionUinput(void* context) {
   auto* harness = static_cast<Harness*>(context);
+  harness->lifecycle_events.emplace_back("open-uinput");
   ++harness->uinput_open_calls;
   return harness->attempt == 2 ? -1 : static_cast<int>(200 + harness->attempt);
 }
@@ -184,6 +208,7 @@ void CloseSessionUinput(void* context, int) {
 
 ayn::rsinput::StartupResult InitializeSession(void* context, int) {
   auto* harness = static_cast<Harness*>(context);
+  harness->lifecycle_events.emplace_back("handshake");
   ++harness->initialization_calls;
   return harness->attempt == 3 ? ayn::rsinput::StartupResult::kFailed
                                : ayn::rsinput::StartupResult::kCompleted;
@@ -216,10 +241,10 @@ void WaitAndRequestStop(void* context, uint32_t delay_ms) {
 
 ayn::rsinput::LifecycleCallbacks MakeLifecycleCallbacks(Harness* harness) {
   return {
-      StopRequested,       PowerOn,            PowerOff,
-      OpenSessionUart,     OpenSessionUinput,  CloseSessionUart,
-      CloseSessionUinput,  InitializeSession,  ForwardSession,
-      WaitBeforeRetry,     harness,
+      StopRequested,       PowerOn,             PowerOff,
+      SettleAfterPowerOn,  OpenSessionUart,      OpenSessionUinput,
+      CloseSessionUart,    CloseSessionUinput,   InitializeSession,
+      ForwardSession,      WaitBeforeRetry,      harness,
   };
 }
 
@@ -258,7 +283,7 @@ void Q9HandshakeWaitsForEachResponseBeforeAdvancing() {
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
-                                     &diagnostics) ==
+                                     100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
   CheckQ9HandshakeWrites(harness);
   CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 1, 3}));
@@ -278,7 +303,7 @@ void BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead() {
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
-                                     &diagnostics) ==
+                                     100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
   CheckQ9HandshakeWrites(harness);
   CHECK((harness.writes_seen_by_read == std::vector<size_t>{1}));
@@ -300,7 +325,7 @@ void PreconfigurationTypeTwoCannotCompleteHandshake() {
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
-                                     &diagnostics) ==
+                                     100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
   CheckQ9HandshakeWrites(harness);
   CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 3}));
@@ -321,7 +346,7 @@ void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
-                                     &diagnostics) ==
+                                     100, &diagnostics) ==
         ayn::rsinput::StartupResult::kFailed);
   CHECK(harness.writes.size() == 1);
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kFailed);
@@ -343,12 +368,30 @@ void MissingTypeTwoResponseFailsClosedAfterConfiguration() {
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
-                                     &diagnostics) ==
+                                     100, &diagnostics) ==
         ayn::rsinput::StartupResult::kFailed);
   CheckQ9HandshakeWrites(harness);
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kFailed);
   CHECK(diagnostics.expected_response_type == 0x02);
   CHECK(diagnostics.failure == ayn::rsinput::HandshakeFailure::kTimeout);
+}
+
+void ConfigurationFrameWaitFailureFailsClosed() {
+  HandshakeHarness harness;
+  harness.fail_frame_wait_at = 0;
+  harness.reads = {
+      {ayn::rsinput::HandshakeReadResult::kData,
+       MakeResponseFrame(0x70, 0x01, {0x01}), 10},
+  };
+  ayn::rsinput::HandshakeDiagnostics diagnostics;
+
+  CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
+                                     100, &diagnostics) ==
+        ayn::rsinput::StartupResult::kFailed);
+  CHECK(harness.writes.size() == 1);
+  CHECK(harness.frame_waits_ms.empty());
+  CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kFailed);
+  CHECK(diagnostics.failure == ayn::rsinput::HandshakeFailure::kWait);
 }
 
 void OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff() {
@@ -358,13 +401,13 @@ void OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff() {
   CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {100, 400}) ==
         ayn::rsinput::StartupResult::kStopped);
   CHECK(harness.attempt == 6);
-  CHECK(harness.uinput_open_calls == 5);
-  CHECK(harness.initialization_calls == 4);
+  CHECK(harness.uinput_open_calls == 4);
+  CHECK(harness.initialization_calls == 5);
   CHECK(harness.forward_calls == 3);
   CHECK(harness.read_failures == 1);
   CHECK(harness.emit_failures == 1);
   CHECK(harness.uart_close_calls == 5);
-  CHECK(harness.uinput_close_calls == 4);
+  CHECK(harness.uinput_close_calls == 3);
   CHECK((harness.retry_delays_ms ==
          std::vector<uint32_t>{100, 200, 400, 400, 400}));
   CHECK(harness.power_on_calls == 2);
@@ -374,6 +417,18 @@ void OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff() {
                                               {false, 3},
                                               {true, 3},
                                               {false, 6}}));
+}
+
+void PowerSettlesBeforeUartAndUinputAppearsOnlyAfterHandshake() {
+  Harness harness;
+  harness.attempt = 5;
+  const auto callbacks = MakeLifecycleCallbacks(&harness);
+
+  CHECK(ayn::rsinput::RunReconnectLoop(callbacks, {250, 5000}) ==
+        ayn::rsinput::StartupResult::kStopped);
+  CHECK((harness.lifecycle_events ==
+         std::vector<std::string>{"power-on", "power-settle", "open-uart",
+                                  "handshake", "open-uinput", "power-off"}));
 }
 
 void PowerOnFailurePreventsUartOpenAndHandshake() {
@@ -477,6 +532,8 @@ int main() {
       {"open, initialization, read, and emit failures reconnect with bounded "
        "backoff",
        OpenInitializationReadAndEmitFailuresReconnectWithBoundedBackoff},
+      {"power settles before UART and uinput appears only after handshake",
+       PowerSettlesBeforeUartAndUinputAppearsOnlyAfterHandshake},
       {"buffered type two after type one completes handshake without another "
        "read",
        BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead},
@@ -486,6 +543,8 @@ int main() {
        MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout},
       {"missing type two response fails closed after configuration",
        MissingTypeTwoResponseFailsClosedAfterConfiguration},
+      {"configuration frame wait failure fails closed",
+       ConfigurationFrameWaitFailureFailsClosed},
       {"power-on failure prevents UART open and handshake",
        PowerOnFailurePreventsUartOpenAndHandshake},
       {"owned power is released once when cleanup is safe",

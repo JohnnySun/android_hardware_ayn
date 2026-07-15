@@ -32,6 +32,8 @@ constexpr char kUartPath[] = "/dev/ttyHS1";
 constexpr char kUinputPath[] = "/dev/uinput";
 constexpr char kGamepadName[] = "AYN Odin2 Gamepad";
 constexpr uint32_t kHandshakeResponseTimeoutMs = 1000;
+constexpr uint32_t kMcuPowerSettleMs = 100;
+constexpr uint32_t kMcuCommandIntervalMs = 100;
 constexpr uint32_t kInitialRetryDelayMs = 250;
 constexpr uint32_t kMaxRetryDelayMs = 5000;
 constexpr uint32_t kStopCheckIntervalMs = 50;
@@ -138,6 +140,24 @@ bool PowerOffRuntimeMcu(void*) {
   return SetRuntimeMcuPower(false);
 }
 
+ayn::rsinput::StartupResult SettleAfterMcuPowerOn(void*) {
+  uint32_t remaining_ms = kMcuPowerSettleMs;
+  while (remaining_ms != 0 && g_stop_requested == 0) {
+    const uint32_t wait_ms = std::min(remaining_ms, kStopCheckIntervalMs);
+    const int result = poll(nullptr, 0, static_cast<int>(wait_ms));
+    if (result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      PLOG(ERROR) << "RSInput MCU power settle failed";
+      return ayn::rsinput::StartupResult::kFailed;
+    }
+    remaining_ms -= wait_ms;
+  }
+  return g_stop_requested != 0 ? ayn::rsinput::StartupResult::kStopped
+                               : ayn::rsinput::StartupResult::kCompleted;
+}
+
 int OpenConfiguredUart() {
   const int fd = open(kUartPath, O_RDWR | O_NOCTTY | O_CLOEXEC);
   if (fd < 0) {
@@ -148,6 +168,12 @@ int OpenConfiguredUart() {
   termios settings{};
   if (tcgetattr(fd, &settings) != 0) {
     PLOG(ERROR) << "cannot read RSInput UART settings";
+    close(fd);
+    return -1;
+  }
+
+  if (tcflush(fd, TCIFLUSH) != 0) {
+    PLOG(ERROR) << "cannot flush RSInput UART";
     close(fd);
     return -1;
   }
@@ -274,6 +300,23 @@ bool WriteInitializationFrame(void* context, const uint8_t* data, size_t size) {
   return WriteAll(*static_cast<int*>(context), data, size);
 }
 
+bool WaitBeforeInitializationFrame(void*, uint32_t delay_ms) {
+  uint32_t remaining_ms = delay_ms;
+  while (remaining_ms != 0 && g_stop_requested == 0) {
+    const uint32_t wait_ms = std::min(remaining_ms, kStopCheckIntervalMs);
+    const int result = poll(nullptr, 0, static_cast<int>(wait_ms));
+    if (result < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      PLOG(ERROR) << "RSInput MCU command interval failed";
+      return false;
+    }
+    remaining_ms -= wait_ms;
+  }
+  return g_stop_requested == 0;
+}
+
 uint64_t MonotonicMilliseconds(void*) {
   return static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -359,6 +402,8 @@ const char* HandshakeFailureName(ayn::rsinput::HandshakeFailure failure) {
       return "invalid-configuration";
     case ayn::rsinput::HandshakeFailure::kWrite:
       return "write";
+    case ayn::rsinput::HandshakeFailure::kWait:
+      return "wait";
     case ayn::rsinput::HandshakeFailure::kRead:
       return "read";
     case ayn::rsinput::HandshakeFailure::kTimeout:
@@ -445,11 +490,12 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void*, int uart_fd,
 ayn::rsinput::StartupResult InitializeRuntimeSession(void*, int uart_fd) {
   const ayn::rsinput::HandshakeCallbacks callbacks = {
       StopWasRequested, WriteInitializationFrame, ReadHandshakeBytes,
-      MonotonicMilliseconds, &uart_fd,
+      WaitBeforeInitializationFrame, MonotonicMilliseconds, &uart_fd,
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
   const ayn::rsinput::StartupResult result = ayn::rsinput::RunQ9Handshake(
-      callbacks, kHandshakeResponseTimeoutMs, &diagnostics);
+      callbacks, kHandshakeResponseTimeoutMs, kMcuCommandIntervalMs,
+      &diagnostics);
   if (result == ayn::rsinput::StartupResult::kFailed) {
     LOG(ERROR) << "RSInput Q9 handshake failed"
                << " reason=" << HandshakeFailureName(diagnostics.failure)
@@ -491,8 +537,8 @@ int RunSupportedDevice(void*) {
 
   const ayn::rsinput::LifecycleCallbacks callbacks = {
       StopWasRequested,       PowerOnRuntimeMcu,    PowerOffRuntimeMcu,
-      OpenRuntimeUart,        OpenRuntimeUinput,    CloseRuntimeUart,
-      CloseRuntimeUinput,     InitializeRuntimeSession,
+      SettleAfterMcuPowerOn,  OpenRuntimeUart,      OpenRuntimeUinput,
+      CloseRuntimeUart,       CloseRuntimeUinput,   InitializeRuntimeSession,
       ForwardStatusFrames,    WaitBeforeRetry,      nullptr,
   };
   const ayn::rsinput::StartupResult result = ayn::rsinput::RunReconnectLoop(
