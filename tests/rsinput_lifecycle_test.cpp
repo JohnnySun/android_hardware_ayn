@@ -340,26 +340,23 @@ void BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead() {
   CHECK(diagnostics.stats.accepted_responses == 2);
 }
 
-void DirectStatusStreamCompletesHandshakeWithoutConfiguration() {
+void DirectStatusStreamTriggersConfigurationBeforeInitialization() {
   HandshakeHarness harness;
   harness.reads = {
       {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData,
        MakeResponseFrame(0x50, 0x02, std::vector<uint8_t>(14, 0)), 10},
+      {ayn::rsinput::HandshakeReadResult::kData,
+       MakeResponseFrame(0x51, 0x02, std::vector<uint8_t>(14, 0)), 210},
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
-  const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
-  CHECK(harness.writes.size() == 3);
-  CHECK(harness.writes[0] == frames[0]);
-  CHECK(harness.writes[1] == frames[0]);
-  CHECK(harness.writes[2] == frames[1]);
-  CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 3}));
+  CheckQ9HandshakeWrites(harness);
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
-  CHECK(diagnostics.stats.accepted_responses == 1);
+  CHECK(diagnostics.stats.accepted_responses == 2);
 }
 
 void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
@@ -620,8 +617,8 @@ int main() {
       {"buffered type two after type one completes handshake without another "
        "read",
        BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead},
-      {"direct status stream completes handshake without configuration",
-       DirectStatusStreamCompletesHandshakeWithoutConfiguration},
+      {"direct status stream triggers configuration before initialization",
+       DirectStatusStreamTriggersConfigurationBeforeInitialization},
       {"malformed and unrelated packets remain uninitialized until timeout",
        MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout},
       {"missing type two response fails closed after configuration",

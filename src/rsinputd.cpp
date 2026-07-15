@@ -32,7 +32,6 @@ constexpr char kUartPath[] = "/dev/ttyHS1";
 constexpr char kUinputPath[] = "/dev/uinput";
 constexpr char kGamepadName[] = "AYN Odin2 Gamepad";
 constexpr uint32_t kHandshakeResponseTimeoutMs = 1000;
-constexpr uint32_t kMcuPowerSettleMs = 200;
 constexpr uint32_t kMcuCommandIntervalMs = 100;
 constexpr useconds_t kUartByteIntervalUs = 100;
 constexpr uint32_t kInitialRetryDelayMs = 250;
@@ -108,53 +107,11 @@ bool WriteAll(int fd, const void* data, size_t size) {
   return true;
 }
 
-bool WriteMcuPowerControl(void*, const char* path, const uint8_t* data,
-                          size_t size) {
-  const int fd = open(path, O_WRONLY | O_CLOEXEC);
-  if (fd < 0) {
-    PLOG(ERROR) << "cannot open RSInput MCU power control";
-    return false;
-  }
-  const bool written = WriteAll(fd, data, size);
-  if (close(fd) != 0) {
-    PLOG(ERROR) << "cannot close RSInput MCU power control";
-    return false;
-  }
-  return written;
+bool LeaveRuntimeMcuPowerUnchanged(void*) {
+  return true;
 }
 
-bool SetRuntimeMcuPower(bool enabled) {
-  if (ayn::rsinput::WriteMcuPowerState(WriteMcuPowerControl, nullptr,
-                                       enabled)) {
-    return true;
-  }
-  LOG(ERROR) << "cannot set RSInput MCU power state to "
-             << (enabled ? "on" : "off");
-  return false;
-}
-
-bool PowerOnRuntimeMcu(void*) {
-  return SetRuntimeMcuPower(true);
-}
-
-bool PowerOffRuntimeMcu(void*) {
-  return SetRuntimeMcuPower(false);
-}
-
-ayn::rsinput::StartupResult SettleAfterMcuPowerOn(void*) {
-  uint32_t remaining_ms = kMcuPowerSettleMs;
-  while (remaining_ms != 0 && g_stop_requested == 0) {
-    const uint32_t wait_ms = std::min(remaining_ms, kStopCheckIntervalMs);
-    const int result = poll(nullptr, 0, static_cast<int>(wait_ms));
-    if (result < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      PLOG(ERROR) << "RSInput MCU power settle failed";
-      return ayn::rsinput::StartupResult::kFailed;
-    }
-    remaining_ms -= wait_ms;
-  }
+ayn::rsinput::StartupResult SkipRuntimeMcuPowerSettle(void*) {
   return g_stop_requested != 0 ? ayn::rsinput::StartupResult::kStopped
                                : ayn::rsinput::StartupResult::kCompleted;
 }
@@ -546,8 +503,8 @@ int RunSupportedDevice(void*) {
   }
 
   const ayn::rsinput::LifecycleCallbacks callbacks = {
-      StopWasRequested,       PowerOnRuntimeMcu,
-      PowerOffRuntimeMcu,     SettleAfterMcuPowerOn,
+      StopWasRequested,       LeaveRuntimeMcuPowerUnchanged,
+      LeaveRuntimeMcuPowerUnchanged, SkipRuntimeMcuPowerSettle,
       OpenRuntimeUart,        OpenRuntimeUinput,
       CloseRuntimeUart,       CloseRuntimeUinput,   InitializeRuntimeSession,
       ForwardStatusFrames,    WaitBeforeRetry,      nullptr,

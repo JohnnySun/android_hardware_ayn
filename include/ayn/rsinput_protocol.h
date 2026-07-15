@@ -42,6 +42,7 @@ class Q9Handshake {
 
   HandshakeState state() const { return state_; }
   uint8_t expected_response_type() const { return expected_response_type_; }
+  bool status_stream_observed() const { return status_stream_observed_; }
   const HandshakeStats& stats() const { return stats_; }
 
  private:
@@ -51,6 +52,7 @@ class Q9Handshake {
   size_t buffered_size_ = 0;
   HandshakeState state_ = HandshakeState::kNotStarted;
   uint8_t expected_response_type_ = 0;
+  bool status_stream_observed_ = false;
   HandshakeStats stats_{};
 };
 

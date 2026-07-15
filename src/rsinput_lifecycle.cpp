@@ -110,6 +110,7 @@ StartupResult RunQ9Handshake(const HandshakeCallbacks& callbacks,
 
     if (now_ms >= next_tx_ms) {
       if (!poll_detector.poll_stop_requested() &&
+          !handshake.status_stream_observed() &&
           !callbacks.write_frame(callbacks.context, frames[0].data(),
                                  frames[0].size())) {
         failure = HandshakeFailure::kWrite;

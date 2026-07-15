@@ -172,14 +172,11 @@ fi
 runtime_callbacks="$(sed -n \
   '/const ayn::rsinput::LifecycleCallbacks callbacks = {/,/};/p' \
   "$ROOT/src/rsinputd.cpp")"
-if ! printf '%s\n' "$runtime_callbacks" | grep -q 'PowerOnRuntimeMcu' ||
-   ! printf '%s\n' "$runtime_callbacks" | grep -q 'PowerOffRuntimeMcu' ||
-   ! printf '%s\n' "$runtime_callbacks" | grep -q 'SettleAfterMcuPowerOn' ||
-   printf '%s\n' "$runtime_callbacks" | grep -q \
+if ! printf '%s\n' "$runtime_callbacks" | grep -q \
      'LeaveRuntimeMcuPowerUnchanged' ||
-   ! grep -qx 'constexpr uint32_t kMcuPowerSettleMs = 200;' \
-     "$ROOT/src/rsinputd.cpp"; then
-  echo "error: runtime must own mapped MCU power with the proven 200 ms settle" >&2
+   printf '%s\n' "$runtime_callbacks" | grep -Eq \
+     'PowerOnRuntimeMcu|PowerOffRuntimeMcu|SettleAfterMcuPowerOn'; then
+  echo "error: stock startup must not toggle or settle MCU power" >&2
   exit 1
 fi
 

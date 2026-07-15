@@ -169,8 +169,8 @@ void Q9Handshake::ProcessBuffered() {
 
     ++stats_.accepted_responses;
     if (direct_status) {
-      state_ = HandshakeState::kInitialized;
-      expected_response_type_ = 0;
+      status_stream_observed_ = true;
+      state_ = HandshakeState::kSendConfiguration;
     } else if (state_ == HandshakeState::kAwaitingType1) {
       state_ = HandshakeState::kSendConfiguration;
     } else {

@@ -109,16 +109,18 @@ void PollStopResponseCannotAdvanceVersionHandshake() {
   CHECK(handshake.stats().accepted_responses == 1);
 }
 
-void ValidStatusStreamCanEstablishTheControllerSession() {
+void ValidStatusStreamStillRequiresControllerConfiguration() {
   ayn::rsinput::Q9Handshake handshake;
   handshake.Start();
 
   const auto status = MakeStatusFrame();
   handshake.Feed(status.data(), status.size());
 
-  CHECK(handshake.state() == ayn::rsinput::HandshakeState::kInitialized);
+  CHECK(handshake.state() ==
+        ayn::rsinput::HandshakeState::kSendConfiguration);
   CHECK(handshake.stats().accepted_responses == 1);
-  CHECK(handshake.expected_response_type() == 0);
+  CHECK(handshake.expected_response_type() == 0x01);
+  CHECK(handshake.status_stream_observed());
 }
 
 void DeviceGateIsExactAndFailClosed() {
@@ -235,8 +237,8 @@ int main() {
        ExactQ9HandshakeFramesAreEncoded},
       {"poll stop response cannot advance version handshake",
        PollStopResponseCannotAdvanceVersionHandshake},
-      {"valid status stream can establish the controller session",
-       ValidStatusStreamCanEstablishTheControllerSession},
+      {"valid status stream still requires controller configuration",
+       ValidStatusStreamStillRequiresControllerConfiguration},
       {"device gate is exact and fail closed", DeviceGateIsExactAndFailClosed},
       {"unsupported device cannot enter runtime I/O",
        UnsupportedDeviceCannotEnterRuntimeIo},
