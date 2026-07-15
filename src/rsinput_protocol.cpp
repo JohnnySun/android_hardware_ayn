@@ -152,19 +152,26 @@ void Q9Handshake::ProcessBuffered() {
     }
 
     const uint8_t response_type = buffer_[5];
+    const bool direct_status =
+        state_ == HandshakeState::kAwaitingType1 &&
+        response_type == kCmdStatus &&
+        payload_size == Parser::kStatusPayloadSize;
     const bool expected_type = response_type == expected_response_type_;
     const bool expected_payload =
         state_ == HandshakeState::kAwaitingType1
             ? payload_size >= 1 && buffer_[8] == kCmdCommod
             : payload_size == Parser::kStatusPayloadSize;
     discard_prefix(frame_size);
-    if (!expected_type || !expected_payload) {
+    if (!direct_status && (!expected_type || !expected_payload)) {
       ++stats_.unrelated_packets;
       continue;
     }
 
     ++stats_.accepted_responses;
-    if (state_ == HandshakeState::kAwaitingType1) {
+    if (direct_status) {
+      state_ = HandshakeState::kInitialized;
+      expected_response_type_ = 0;
+    } else if (state_ == HandshakeState::kAwaitingType1) {
       state_ = HandshakeState::kSendConfiguration;
     } else {
       state_ = HandshakeState::kInitialized;

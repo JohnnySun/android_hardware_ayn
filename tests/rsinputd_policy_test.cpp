@@ -109,6 +109,18 @@ void PollStopResponseCannotAdvanceVersionHandshake() {
   CHECK(handshake.stats().accepted_responses == 1);
 }
 
+void ValidStatusStreamCanEstablishTheControllerSession() {
+  ayn::rsinput::Q9Handshake handshake;
+  handshake.Start();
+
+  const auto status = MakeStatusFrame();
+  handshake.Feed(status.data(), status.size());
+
+  CHECK(handshake.state() == ayn::rsinput::HandshakeState::kInitialized);
+  CHECK(handshake.stats().accepted_responses == 1);
+  CHECK(handshake.expected_response_type() == 0);
+}
+
 void DeviceGateIsExactAndFailClosed() {
   CHECK(ayn::rsinput::IsSupportedDevice("odin2_mini"));
   CHECK(!ayn::rsinput::IsSupportedDevice(""));
@@ -223,6 +235,8 @@ int main() {
        ExactQ9HandshakeFramesAreEncoded},
       {"poll stop response cannot advance version handshake",
        PollStopResponseCannotAdvanceVersionHandshake},
+      {"valid status stream can establish the controller session",
+       ValidStatusStreamCanEstablishTheControllerSession},
       {"device gate is exact and fail closed", DeviceGateIsExactAndFailClosed},
       {"unsupported device cannot enter runtime I/O",
        UnsupportedDeviceCannotEnterRuntimeIo},

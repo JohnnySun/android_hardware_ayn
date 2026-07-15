@@ -340,31 +340,26 @@ void BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead() {
   CHECK(diagnostics.stats.accepted_responses == 2);
 }
 
-void PreconfigurationTypeTwoCannotCompleteHandshake() {
+void DirectStatusStreamCompletesHandshakeWithoutConfiguration() {
   HandshakeHarness harness;
-  auto responses = MakeResponseFrame(0x4f, 0x01, {0x05});
-  const auto early_type_two =
-      MakeResponseFrame(0x50, 0x02, std::vector<uint8_t>(14, 0));
-  responses.insert(responses.end(), early_type_two.begin(),
-                   early_type_two.end());
-  const auto type_one = MakeResponseFrame(0x51, 0x01, {0x01});
-  responses.insert(responses.end(), type_one.begin(), type_one.end());
   harness.reads = {
       {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
-      {ayn::rsinput::HandshakeReadResult::kData, responses, 10},
       {ayn::rsinput::HandshakeReadResult::kData,
-       MakeResponseFrame(0x52, 0x02, std::vector<uint8_t>(14, 0)), 10},
+       MakeResponseFrame(0x50, 0x02, std::vector<uint8_t>(14, 0)), 10},
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
 
   CHECK(ayn::rsinput::RunQ9Handshake(MakeHandshakeCallbacks(&harness), 500,
                                      100, &diagnostics) ==
         ayn::rsinput::StartupResult::kCompleted);
-  CheckQ9HandshakeWrites(harness);
-  CHECK((harness.writes_seen_by_read ==
-         std::vector<size_t>{1, 3, 3, 3, 4}));
+  const auto frames = ayn::rsinput::BuildQ9HandshakeFrames();
+  CHECK(harness.writes.size() == 3);
+  CHECK(harness.writes[0] == frames[0]);
+  CHECK(harness.writes[1] == frames[0]);
+  CHECK(harness.writes[2] == frames[1]);
+  CHECK((harness.writes_seen_by_read == std::vector<size_t>{1, 3}));
   CHECK(diagnostics.state == ayn::rsinput::HandshakeState::kInitialized);
-  CHECK(diagnostics.stats.unrelated_packets == 2);
+  CHECK(diagnostics.stats.accepted_responses == 1);
 }
 
 void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
@@ -375,7 +370,7 @@ void MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout() {
       {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 100},
       {ayn::rsinput::HandshakeReadResult::kData, malformed, 10},
       {ayn::rsinput::HandshakeReadResult::kData,
-       MakeResponseFrame(0x61, 0x02, std::vector<uint8_t>(14, 0)), 10},
+       MakeResponseFrame(0x61, 0x7f, std::vector<uint8_t>(14, 0)), 10},
       {ayn::rsinput::HandshakeReadResult::kTimeout, {}, 480},
   };
   ayn::rsinput::HandshakeDiagnostics diagnostics;
@@ -625,8 +620,8 @@ int main() {
       {"buffered type two after type one completes handshake without another "
        "read",
        BufferedTypeTwoAfterTypeOneCompletesHandshakeWithoutAnotherRead},
-      {"preconfiguration type two cannot complete handshake",
-       PreconfigurationTypeTwoCannotCompleteHandshake},
+      {"direct status stream completes handshake without configuration",
+       DirectStatusStreamCompletesHandshakeWithoutConfiguration},
       {"malformed and unrelated packets remain uninitialized until timeout",
        MalformedAndUnrelatedPacketsRemainUninitializedUntilTimeout},
       {"missing type two response fails closed after configuration",
