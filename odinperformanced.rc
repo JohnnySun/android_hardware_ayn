@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+
+service odinperformanced /system/bin/odinperformanced
+    class late_start
+    user system
+    group system
+    oneshot
