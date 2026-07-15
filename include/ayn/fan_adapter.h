@@ -19,6 +19,9 @@ using FanSettingsReader = bool (*)(void* context, FanSettings* settings);
 bool ReadPosixFile(void* context, const std::string& path, std::string* value);
 bool WritePosixFile(void* context, const std::string& path,
                     const std::string& value);
+bool ReadCpuTemperatureFromZones(SysfsReader read_file, void* reader_context,
+                                 int* temperature_c);
+bool ReadCpuTemperature(void* context, int* temperature_c);
 
 AdapterResult ApplyCurrentSettingsUnlessStopped(
     const std::string& product_device, const SysfsPaths& paths,

@@ -24,6 +24,8 @@ void Check(bool condition, const char* expression, const char* file, int line) {
 }
 
 using ayn::fan::ApplyResult;
+using ayn::fan::CurveDecision;
+using ayn::fan::FanCurveController;
 using ayn::fan::FanMode;
 using ayn::fan::FanSettings;
 using ayn::fan::PolicyResult;
@@ -142,10 +144,33 @@ void SmartFormulaBoundariesMatchObservedContract() {
              .valid);
 }
 
-void FixedAndCustomModesResolveDeterministically() {
+void AutomaticCurvesInterpolateDeterministically() {
   CHECK((Resolve(FanMode::kDisabled, 0, 50) == PolicyResult{true, 0}));
-  CHECK((Resolve(FanMode::kQuiet, 0, 50) == PolicyResult{true, 5000}));
-  CHECK((Resolve(FanMode::kSport, 0, 50) == PolicyResult{true, 25000}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 39) == PolicyResult{true, 5000}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 40) == PolicyResult{true, 5000}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 45) == PolicyResult{true, 6500}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 55) == PolicyResult{true, 10000}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 65) == PolicyResult{true, 14500}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 75) == PolicyResult{true, 19500}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 85) == PolicyResult{true, 25000}));
+  CHECK((Resolve(FanMode::kQuiet, 0, 120) == PolicyResult{true, 25000}));
+
+  CHECK((Resolve(FanMode::kSport, 0, 34) == PolicyResult{true, 8000}));
+  CHECK((Resolve(FanMode::kSport, 0, 35) == PolicyResult{true, 8000}));
+  CHECK((Resolve(FanMode::kSport, 0, 40) == PolicyResult{true, 10000}));
+  CHECK((Resolve(FanMode::kSport, 0, 50) == PolicyResult{true, 14500}));
+  CHECK((Resolve(FanMode::kSport, 0, 60) == PolicyResult{true, 19000}));
+  CHECK((Resolve(FanMode::kSport, 0, 70) == PolicyResult{true, 23000}));
+  CHECK((Resolve(FanMode::kSport, 0, 75) == PolicyResult{true, 25000}));
+  CHECK((Resolve(FanMode::kSport, 0, 100) == PolicyResult{true, 25000}));
+
+  for (FanMode mode : {FanMode::kQuiet, FanMode::kSport}) {
+    CHECK(!Resolve(mode, 0, ayn::fan::kMinimumTemperatureC - 1).valid);
+    CHECK(!Resolve(mode, 0, ayn::fan::kMaximumTemperatureC + 1).valid);
+  }
+}
+
+void CustomModeRemainsExplicitAndBounded() {
   CHECK((Resolve(FanMode::kCustom, 24999, 50) ==
          PolicyResult{true, 25000}));
   CHECK((Resolve(FanMode::kCustom, 25099, 50) ==
@@ -154,6 +179,36 @@ void FixedAndCustomModesResolveDeterministically() {
          PolicyResult{true, 25100}));
   CHECK((Resolve(FanMode::kCustom, 35099, 50) ==
          PolicyResult{true, 35000}));
+}
+
+void CurveControllerUsesHysteresisAndDebounce() {
+  FanCurveController controller;
+  CHECK((controller.Observe(FanMode::kQuiet, 50) ==
+         CurveDecision{true, true, 8000}));
+  CHECK((controller.Observe(FanMode::kQuiet, 51) ==
+         CurveDecision{true, false, 8000}));
+  CHECK((controller.Observe(FanMode::kQuiet, 52) ==
+         CurveDecision{true, false, 8000}));
+  CHECK((controller.Observe(FanMode::kQuiet, 53) ==
+         CurveDecision{true, true, 9200}));
+
+  CHECK((controller.Observe(FanMode::kQuiet, 51) ==
+         CurveDecision{true, false, 9200}));
+  CHECK((controller.Observe(FanMode::kQuiet, 50) ==
+         CurveDecision{true, true, 8000}));
+}
+
+void HighTemperatureBypassesDebounceAtBoundedMaximum() {
+  FanCurveController controller;
+  CHECK((controller.Observe(FanMode::kQuiet, 50) ==
+         CurveDecision{true, true, 8000}));
+  CHECK((controller.Observe(FanMode::kQuiet,
+                            ayn::fan::kHighTemperatureC) ==
+         CurveDecision{true, true, ayn::fan::kSafeMaximumDutyNs}));
+  CHECK((controller.Observe(FanMode::kQuiet,
+                            ayn::fan::kHighTemperatureC + 10) ==
+         CurveDecision{true, false, ayn::fan::kSafeMaximumDutyNs}));
+  CHECK(ayn::fan::kSafeMaximumDutyNs <= ayn::fan::kCustomMaximumDutyNs);
 }
 
 void InvalidSettingsFailClosed() {
@@ -394,8 +449,14 @@ int main() {
   const std::vector<std::pair<std::string, void (*)()>> tests = {
       {"smart formula boundaries match observed contract",
        SmartFormulaBoundariesMatchObservedContract},
-      {"fixed and custom modes resolve deterministically",
-       FixedAndCustomModesResolveDeterministically},
+      {"automatic curves interpolate deterministically",
+       AutomaticCurvesInterpolateDeterministically},
+      {"custom mode remains explicit and bounded",
+       CustomModeRemainsExplicitAndBounded},
+      {"curve controller uses hysteresis and debounce",
+       CurveControllerUsesHysteresisAndDebounce},
+      {"high temperature bypasses debounce at bounded maximum",
+       HighTemperatureBypassesDebounceAtBoundedMaximum},
       {"invalid settings fail closed", InvalidSettingsFailClosed},
       {"identity and paths must match exactly",
        IdentityAndPathsMustMatchExactly},

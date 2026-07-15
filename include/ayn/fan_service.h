@@ -23,6 +23,7 @@ enum class FanResult {
   kTachTimeout,
   kDisableUnconfirmed,
   kNotOwner,
+  kTemperatureUnavailable,
 };
 
 struct FanSnapshot {
@@ -51,11 +52,13 @@ class FanService {
   FanService(FanDeviceIdentity identity, SysfsPaths paths,
              SysfsReader read_file, void* reader_context,
              SysfsWriter write_file, void* writer_context,
+             TemperatureReader read_temperature, void* temperature_context,
              SleepForMilliseconds sleep_for_milliseconds,
              void* sleep_context);
 
   FanResponse GetStatus();
   FanResponse SetMode(FanMode mode, uintptr_t owner_token, bool owner_alive);
+  FanResponse Refresh();
   FanResponse OwnerDied(uintptr_t owner_token);
   FanResponse ForceOff();
 
@@ -73,9 +76,10 @@ class FanService {
     kIoError,
   };
 
-  FanResponse ApplyModeLocked(FanMode mode);
+  FanResponse ApplyModeLocked(FanMode mode, int duty);
   FanResponse FailLocked(FanMode requested_mode, FanResult result);
   bool ApplyOffBestEffortLocked(FanSnapshot* snapshot);
+  bool ReadTemperatureLocked(int* temperature_c);
   bool ReadCompleteSnapshotLocked(RawSnapshot* snapshot);
   bool ReadIntegerLocked(const std::string& path, int* value);
   bool WriteAndConfirmLocked(const std::string& path, int value);
@@ -88,8 +92,13 @@ class FanService {
   void* const reader_context_;
   const SysfsWriter write_file_;
   void* const writer_context_;
+  const TemperatureReader read_temperature_;
+  void* const temperature_context_;
   const SleepForMilliseconds sleep_for_milliseconds_;
   void* const sleep_context_;
+  FanCurveController curve_controller_;
+  FanMode active_mode_ = FanMode::kOff;
+  std::optional<FanSnapshot> current_snapshot_;
   uintptr_t owner_token_ = 0;
   std::mutex mutex_;
 };

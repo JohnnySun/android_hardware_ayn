@@ -66,13 +66,24 @@ class OdinFanBinder final : public ::aidl::com::ayn::fan::BnOdinFan {
   explicit OdinFanBinder(ayn::fan::FanDeviceIdentity identity)
       : core_(std::move(identity), ayn::fan::StockSysfsPaths(),
               ayn::fan::ReadPosixFile, nullptr, ayn::fan::WritePosixFile,
-              nullptr, SleepForMilliseconds, nullptr),
+              nullptr, ayn::fan::ReadCpuTemperature, nullptr,
+              SleepForMilliseconds, nullptr),
         death_recipient_(AIBinder_DeathRecipient_new(OwnerDiedCallback)) {}
 
   ayn::fan::FanResponse ForceOff() {
     std::lock_guard<std::mutex> lock(mutex_);
     ClearOwnerLocked();
     return core_.ForceOff();
+  }
+
+  ayn::fan::FanResponse Refresh() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const ayn::fan::FanResponse response = core_.Refresh();
+    if (response.result != ayn::fan::FanResult::kOk &&
+        response.result != ayn::fan::FanResult::kNotOwner) {
+      ClearOwnerLocked();
+    }
+    return response;
   }
 
   ::ndk::ScopedAStatus getStatus(
@@ -228,6 +239,18 @@ int main() {
   }
 
   LOG(INFO) << "registered " << kServiceName;
+  std::thread([service]() mutable {
+    while (true) {
+      std::this_thread::sleep_for(std::chrono::seconds(
+          ayn::fan::kAutomaticPollIntervalSeconds));
+      const ayn::fan::FanResponse refresh = service->Refresh();
+      if (refresh.result != ayn::fan::FanResult::kOk &&
+          refresh.result != ayn::fan::FanResult::kNotOwner) {
+        LOG(ERROR) << "automatic fan refresh failed closed; result="
+                   << AidlResult(refresh.result);
+      }
+    }
+  }).detach();
   std::thread([service, termination_signals]() mutable {
     int signal = 0;
     if (sigwait(&termination_signals, &signal) != 0) {

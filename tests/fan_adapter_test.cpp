@@ -153,14 +153,21 @@ void MissingOrInvalidSettingsCannotReachSysfs() {
   }
 }
 
-void FixedAndSmartSettingsUseOnlyRequiredAdapters() {
+void AutomaticSettingsReadTemperatureBeforeSysfsWrites() {
   Harness quiet;
   CHECK(Apply(&quiet) == AdapterResult::kApplied);
   CHECK(quiet.settings_reads == 1);
-  CHECK(quiet.temperature_reads == 0);
+  CHECK(quiet.temperature_reads == 1);
   CHECK(quiet.writes.back() ==
         std::make_pair(kExpectedPaths.state, std::string("1")));
   CHECK(quiet.files[kExpectedPaths.duty] == "5000\n");
+
+  Harness sport;
+  sport.settings = {FanMode::kSport, 0};
+  sport.temperature_c = 60;
+  CHECK(Apply(&sport) == AdapterResult::kApplied);
+  CHECK(sport.temperature_reads == 1);
+  CHECK(sport.files[kExpectedPaths.duty] == "19000\n");
 
   Harness smart;
   smart.settings = {FanMode::kSmart, 0};
@@ -169,14 +176,25 @@ void FixedAndSmartSettingsUseOnlyRequiredAdapters() {
   CHECK(smart.files[kExpectedPaths.duty] == "8100\n");
 }
 
+void CustomSettingRemainsManualAndSkipsTemperature() {
+  Harness custom;
+  custom.settings = {FanMode::kCustom, 25100};
+  custom.temperature_valid = false;
+  CHECK(Apply(&custom) == AdapterResult::kApplied);
+  CHECK(custom.temperature_reads == 0);
+  CHECK(custom.files[kExpectedPaths.duty] == "25100\n");
+}
+
 void TemperatureFailureCannotReachSysfs() {
-  Harness harness;
-  harness.settings = {FanMode::kSmart, 0};
-  harness.temperature_valid = false;
-  CHECK(Apply(&harness) == AdapterResult::kFailedClosed);
-  CHECK(harness.temperature_reads == 1);
-  CHECK(harness.sysfs_reads == 0);
-  CHECK(harness.writes.empty());
+  for (FanMode mode : {FanMode::kQuiet, FanMode::kSport, FanMode::kSmart}) {
+    Harness harness;
+    harness.settings = {mode, 0};
+    harness.temperature_valid = false;
+    CHECK(Apply(&harness) == AdapterResult::kFailedClosed);
+    CHECK(harness.temperature_reads == 1);
+    CHECK(harness.sysfs_reads == 0);
+    CHECK(harness.writes.empty());
+  }
 
   for (int temperature_c : {ayn::fan::kMinimumTemperatureC - 1,
                             ayn::fan::kMaximumTemperatureC + 1}) {
@@ -186,6 +204,49 @@ void TemperatureFailureCannotReachSysfs() {
     CHECK(Apply(&out_of_range) == AdapterResult::kFailedClosed);
     CHECK(out_of_range.sysfs_reads == 0);
     CHECK(out_of_range.writes.empty());
+  }
+}
+
+void CpuTemperatureReaderFindsOneNamedZoneAndNormalizesUnits() {
+  const std::string zone0 = "/sys/class/thermal/thermal_zone0/";
+  const std::string zone47 = "/sys/class/thermal/thermal_zone47/";
+
+  Harness millidegrees;
+  millidegrees.files[zone0 + "type"] = "pa\n";
+  millidegrees.files[zone47 + "type"] = "cpu-0-0\n";
+  millidegrees.files[zone47 + "temp"] = "52750\n";
+  int temperature_c = 0;
+  CHECK(ayn::fan::ReadCpuTemperatureFromZones(ReadFile, &millidegrees,
+                                               &temperature_c));
+  CHECK(temperature_c == 52);
+
+  Harness degrees;
+  degrees.files[zone47 + "type"] = "cpu-0-0\n";
+  degrees.files[zone47 + "temp"] = "61\n";
+  CHECK(ayn::fan::ReadCpuTemperatureFromZones(ReadFile, &degrees,
+                                               &temperature_c));
+  CHECK(temperature_c == 61);
+}
+
+void CpuTemperatureReaderFailsClosedOnAmbiguousOrInvalidInput() {
+  const std::string zone47 = "/sys/class/thermal/thermal_zone47/";
+  const std::string zone48 = "/sys/class/thermal/thermal_zone48/";
+  int temperature_c = 0;
+
+  Harness duplicate;
+  duplicate.files[zone47 + "type"] = "cpu-0-0\n";
+  duplicate.files[zone47 + "temp"] = "52000\n";
+  duplicate.files[zone48 + "type"] = "cpu-0-0\n";
+  duplicate.files[zone48 + "temp"] = "53000\n";
+  CHECK(!ayn::fan::ReadCpuTemperatureFromZones(ReadFile, &duplicate,
+                                                &temperature_c));
+
+  for (const std::string& raw : {"", "hot\n", "151\n", "151000\n"}) {
+    Harness invalid;
+    invalid.files[zone47 + "type"] = "cpu-0-0\n";
+    invalid.files[zone47 + "temp"] = raw;
+    CHECK(!ayn::fan::ReadCpuTemperatureFromZones(ReadFile, &invalid,
+                                                  &temperature_c));
   }
 }
 
@@ -220,10 +281,16 @@ int main() {
        UnknownDeviceAndWrongPathsCannotReachAdapters},
       {"missing or invalid settings cannot reach sysfs",
        MissingOrInvalidSettingsCannotReachSysfs},
-      {"fixed and smart settings use only required adapters",
-       FixedAndSmartSettingsUseOnlyRequiredAdapters},
+      {"automatic settings read temperature before sysfs writes",
+       AutomaticSettingsReadTemperatureBeforeSysfsWrites},
+      {"custom setting remains manual and skips temperature",
+       CustomSettingRemainsManualAndSkipsTemperature},
       {"temperature failure cannot reach sysfs",
        TemperatureFailureCannotReachSysfs},
+      {"CPU temperature reader finds one named zone and normalizes units",
+       CpuTemperatureReaderFindsOneNamedZoneAndNormalizesUnits},
+      {"CPU temperature reader fails closed on ambiguous or invalid input",
+       CpuTemperatureReaderFailsClosedOnAmbiguousOrInvalidInput},
       {"unconfirmed disable propagates across the adapter boundary",
        UnconfirmedDisablePropagatesAcrossTheAdapterBoundary},
       {"POSIX file adapter round trips without touching sysfs",

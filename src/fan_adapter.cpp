@@ -6,14 +6,70 @@
 #include <unistd.h>
 
 #include <cerrno>
+#include <charconv>
 #include <cstddef>
 #include <string>
+#include <system_error>
 
 namespace ayn::fan {
 
 namespace {
 
 constexpr size_t kMaximumSysfsValueBytes = 64;
+constexpr int kMaximumThermalZones = 128;
+constexpr char kThermalRoot[] = "/sys/class/thermal/thermal_zone";
+constexpr char kCpuThermalType[] = "cpu-0-0";
+
+bool AutomaticModeNeedsTemperature(FanMode mode) {
+  return mode == FanMode::kQuiet || mode == FanMode::kSport ||
+         mode == FanMode::kSmart;
+}
+
+bool ParseSignedInteger(const std::string& raw, int* value) {
+  if (value == nullptr || raw.empty() || raw.size() > kMaximumSysfsValueBytes) {
+    return false;
+  }
+  size_t size = raw.size();
+  if (raw.back() == '\n') {
+    --size;
+  }
+  if (size == 0) {
+    return false;
+  }
+  int parsed = 0;
+  const char* begin = raw.data();
+  const char* end = begin + size;
+  const auto converted = std::from_chars(begin, end, parsed);
+  if (converted.ec != std::errc() || converted.ptr != end) {
+    return false;
+  }
+  *value = parsed;
+  return true;
+}
+
+bool NormalizeTemperature(int raw, int* temperature_c) {
+  if (temperature_c == nullptr) {
+    return false;
+  }
+  if (raw >= kMinimumTemperatureC && raw <= kMaximumTemperatureC) {
+    *temperature_c = raw;
+    return true;
+  }
+  if (raw > -1000 && raw < 1000) {
+    return false;
+  }
+  if (raw < kMinimumTemperatureC * 1000 ||
+      raw > kMaximumTemperatureC * 1000) {
+    return false;
+  }
+  const int normalized = raw / 1000;
+  if (normalized < kMinimumTemperatureC ||
+      normalized > kMaximumTemperatureC) {
+    return false;
+  }
+  *temperature_c = normalized;
+  return true;
+}
 
 bool RuntimeSettingsAreValid(const FanSettings& settings) {
   switch (settings.mode) {
@@ -101,6 +157,51 @@ bool WritePosixFile(void*, const std::string& path,
   return CloseSuccessfully(fd);
 }
 
+bool ReadCpuTemperatureFromZones(SysfsReader read_file, void* reader_context,
+                                 int* temperature_c) {
+  if (read_file == nullptr || temperature_c == nullptr) {
+    return false;
+  }
+
+  bool found = false;
+  int observed_temperature_c = 0;
+  for (int zone = 0; zone < kMaximumThermalZones; ++zone) {
+    const std::string base =
+        std::string(kThermalRoot) + std::to_string(zone) + "/";
+    std::string type;
+    if (!read_file(reader_context, base + "type", &type)) {
+      continue;
+    }
+    if (!type.empty() && type.back() == '\n') {
+      type.pop_back();
+    }
+    if (type != kCpuThermalType) {
+      continue;
+    }
+    if (found) {
+      return false;
+    }
+
+    std::string raw_temperature;
+    int raw = 0;
+    if (!read_file(reader_context, base + "temp", &raw_temperature) ||
+        !ParseSignedInteger(raw_temperature, &raw) ||
+        !NormalizeTemperature(raw, &observed_temperature_c)) {
+      return false;
+    }
+    found = true;
+  }
+  if (!found) {
+    return false;
+  }
+  *temperature_c = observed_temperature_c;
+  return true;
+}
+
+bool ReadCpuTemperature(void*, int* temperature_c) {
+  return ReadCpuTemperatureFromZones(ReadPosixFile, nullptr, temperature_c);
+}
+
 AdapterResult ApplyCurrentSettingsUnlessStopped(
     const std::string& product_device, const SysfsPaths& paths,
     StopRequested stop_requested, void* stop_context,
@@ -128,7 +229,7 @@ AdapterResult ApplyCurrentSettingsUnlessStopped(
   }
 
   int temperature_c = 0;
-  if (settings.mode == FanMode::kSmart) {
+  if (AutomaticModeNeedsTemperature(settings.mode)) {
     if (!read_temperature(temperature_context, &temperature_c) ||
         temperature_c < kMinimumTemperatureC ||
         temperature_c > kMaximumTemperatureC) {

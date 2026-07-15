@@ -18,25 +18,14 @@ bool IsAidlMode(FanMode mode) {
          mode == FanMode::kSport;
 }
 
+bool IsAutomaticMode(FanMode mode) {
+  return mode == FanMode::kQuiet || mode == FanMode::kSport;
+}
+
 bool IsSupportedIdentity(const FanDeviceIdentity& identity) {
   return identity.product_device == "odin2_mini" &&
          identity.product_name == "lineage_odin2_mini" &&
          identity.vendor_model == "Odin2 Mini";
-}
-
-int DutyForMode(FanMode mode) {
-  switch (mode) {
-    case FanMode::kOff:
-      return kOffDuty;
-    case FanMode::kQuiet:
-      return kQuietDuty;
-    case FanMode::kSport:
-      return kSportDuty;
-    case FanMode::kCustom:
-    case FanMode::kSmart:
-      break;
-  }
-  return -1;
 }
 
 bool ParseNonNegativeInteger(const std::string& raw, int* value) {
@@ -71,6 +60,8 @@ bool ParseNonNegativeInteger(const std::string& raw, int* value) {
 FanService::FanService(FanDeviceIdentity identity, SysfsPaths paths,
                        SysfsReader read_file, void* reader_context,
                        SysfsWriter write_file, void* writer_context,
+                       TemperatureReader read_temperature,
+                       void* temperature_context,
                        SleepForMilliseconds sleep_for_milliseconds,
                        void* sleep_context)
     : identity_(std::move(identity)),
@@ -79,6 +70,8 @@ FanService::FanService(FanDeviceIdentity identity, SysfsPaths paths,
       reader_context_(reader_context),
       write_file_(write_file),
       writer_context_(writer_context),
+      read_temperature_(read_temperature),
+      temperature_context_(temperature_context),
       sleep_for_milliseconds_(sleep_for_milliseconds),
       sleep_context_(sleep_context) {}
 
@@ -94,6 +87,13 @@ FanResult FanService::GateResultLocked() const {
     return FanResult::kIoError;
   }
   return FanResult::kOk;
+}
+
+bool FanService::ReadTemperatureLocked(int* temperature_c) {
+  return read_temperature_ != nullptr && temperature_c != nullptr &&
+         read_temperature_(temperature_context_, temperature_c) &&
+         *temperature_c >= kMinimumTemperatureC &&
+         *temperature_c <= kMaximumTemperatureC;
 }
 
 bool FanService::ReadIntegerLocked(const std::string& path, int* value) {
@@ -145,6 +145,9 @@ FanService::PollResult FanService::PollTachLocked(bool expect_positive,
 }
 
 bool FanService::ApplyOffBestEffortLocked(FanSnapshot* snapshot) {
+  curve_controller_.Reset();
+  active_mode_ = FanMode::kOff;
+  current_snapshot_.reset();
   bool confirmed = true;
   confirmed = WriteAndConfirmLocked(paths_.state, 0) && confirmed;
   int period = -1;
@@ -155,6 +158,9 @@ bool FanService::ApplyOffBestEffortLocked(FanSnapshot* snapshot) {
   confirmed = PollTachLocked(false, &tach) == PollResult::kMatched && confirmed;
   if (confirmed && snapshot != nullptr) {
     *snapshot = {FanMode::kOff, 0, kOffDuty, tach};
+  }
+  if (confirmed) {
+    current_snapshot_ = FanSnapshot{FanMode::kOff, 0, kOffDuty, tach};
   }
   return confirmed;
 }
@@ -167,13 +173,18 @@ FanResponse FanService::FailLocked(FanMode requested_mode, FanResult result) {
                            std::nullopt};
 }
 
-FanResponse FanService::ApplyModeLocked(FanMode mode) {
+FanResponse FanService::ApplyModeLocked(FanMode mode, int duty) {
+  if ((mode == FanMode::kOff && duty != kOffDuty) ||
+      (IsAutomaticMode(mode) &&
+       (duty < 0 || duty > kSafeMaximumDutyNs)) ||
+      (!IsAutomaticMode(mode) && mode != FanMode::kOff)) {
+    return FailLocked(mode, FanResult::kInvalidMode);
+  }
   RawSnapshot initial{};
   if (!ReadCompleteSnapshotLocked(&initial)) {
     return FailLocked(mode, FanResult::kIoError);
   }
 
-  const int duty = DutyForMode(mode);
   int period = -1;
   if (!WriteAndConfirmLocked(paths_.state, 0) ||
       !ReadIntegerLocked(paths_.period, &period) || period != kPwmPeriod ||
@@ -193,7 +204,9 @@ FanResponse FanService::ApplyModeLocked(FanMode mode) {
                                 : FanResult::kIoError);
   }
   const int state = mode == FanMode::kOff ? 0 : 1;
-  return {FanResult::kOk, mode, FanSnapshot{mode, state, duty, tach}};
+  active_mode_ = mode;
+  current_snapshot_ = FanSnapshot{mode, state, duty, tach};
+  return {FanResult::kOk, mode, current_snapshot_};
 }
 
 FanResponse FanService::SetMode(FanMode mode, uintptr_t owner_token,
@@ -209,11 +222,69 @@ FanResponse FanService::SetMode(FanMode mode, uintptr_t owner_token,
   if (!IsAidlMode(mode)) {
     return FailLocked(mode, FanResult::kInvalidMode);
   }
-  FanResponse response = ApplyModeLocked(mode);
+  FanResponse response;
+  if (mode == FanMode::kOff) {
+    curve_controller_.Reset();
+    response = ApplyModeLocked(mode, kOffDuty);
+  } else {
+    int temperature_c = 0;
+    curve_controller_.Reset();
+    if (!ReadTemperatureLocked(&temperature_c)) {
+      return FailLocked(mode, FanResult::kTemperatureUnavailable);
+    }
+    const CurveDecision decision =
+        curve_controller_.Observe(mode, temperature_c);
+    if (!decision.valid || !decision.apply) {
+      return FailLocked(mode, FanResult::kTemperatureUnavailable);
+    }
+    response = ApplyModeLocked(mode, decision.duty_ns);
+  }
   if (response.result == FanResult::kOk) {
     owner_token_ = mode == FanMode::kOff ? 0 : owner_token;
   }
   return response;
+}
+
+FanResponse FanService::Refresh() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const FanResult gate = GateResultLocked();
+  if (gate != FanResult::kOk) {
+    return {gate, active_mode_, std::nullopt};
+  }
+  if (owner_token_ == 0 || !IsAutomaticMode(active_mode_) ||
+      !current_snapshot_.has_value()) {
+    return {FanResult::kNotOwner, FanMode::kOff, std::nullopt};
+  }
+
+  const FanMode mode = active_mode_;
+  int temperature_c = 0;
+  if (!ReadTemperatureLocked(&temperature_c)) {
+    return FailLocked(mode, FanResult::kTemperatureUnavailable);
+  }
+  const CurveDecision decision =
+      curve_controller_.Observe(mode, temperature_c);
+  if (!decision.valid) {
+    return FailLocked(mode, FanResult::kTemperatureUnavailable);
+  }
+  if (!decision.apply) {
+    RawSnapshot raw{};
+    if (!ReadCompleteSnapshotLocked(&raw) || raw.state != 1 ||
+        raw.period != kPwmPeriod || raw.duty != current_snapshot_->duty) {
+      return FailLocked(mode, FanResult::kIoError);
+    }
+    int tach = raw.tach;
+    if (tach <= 0) {
+      const PollResult poll = PollTachLocked(true, &tach);
+      if (poll != PollResult::kMatched) {
+        return FailLocked(mode, poll == PollResult::kTimeout
+                                    ? FanResult::kTachTimeout
+                                    : FanResult::kIoError);
+      }
+    }
+    current_snapshot_ = FanSnapshot{mode, 1, raw.duty, tach};
+    return {FanResult::kOk, mode, current_snapshot_};
+  }
+  return ApplyModeLocked(mode, decision.duty_ns);
 }
 
 FanResponse FanService::GetStatus() {
@@ -230,10 +301,13 @@ FanResponse FanService::GetStatus() {
   FanMode mode = FanMode::kOff;
   if (raw.state == 0 && raw.duty == kOffDuty) {
     mode = FanMode::kOff;
-  } else if (raw.state == 1 && raw.duty == kQuietDuty) {
-    mode = FanMode::kQuiet;
-  } else if (raw.state == 1 && raw.duty == kSportDuty) {
-    mode = FanMode::kSport;
+    owner_token_ = 0;
+    curve_controller_.Reset();
+    active_mode_ = FanMode::kOff;
+  } else if (raw.state == 1 && IsAutomaticMode(active_mode_) &&
+             current_snapshot_.has_value() &&
+             raw.duty == current_snapshot_->duty) {
+    mode = active_mode_;
   } else {
     return FailLocked(FanMode::kOff, FanResult::kIoError);
   }
@@ -248,8 +322,8 @@ FanResponse FanService::GetStatus() {
                                   : FanResult::kIoError);
     }
   }
-  return {FanResult::kOk, mode,
-          FanSnapshot{mode, raw.state, raw.duty, tach}};
+  current_snapshot_ = FanSnapshot{mode, raw.state, raw.duty, tach};
+  return {FanResult::kOk, mode, current_snapshot_};
 }
 
 FanResponse FanService::OwnerDied(uintptr_t owner_token) {
