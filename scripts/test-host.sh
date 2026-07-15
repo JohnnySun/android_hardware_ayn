@@ -176,7 +176,16 @@ if ! printf '%s\n' "$runtime_callbacks" | grep -q \
      'LeaveRuntimeMcuPowerUnchanged' ||
    printf '%s\n' "$runtime_callbacks" | grep -Eq \
      'PowerOnRuntimeMcu|PowerOffRuntimeMcu|SettleAfterMcuPowerOn'; then
-  echo "error: stock startup must not toggle or settle MCU power" >&2
+  echo "error: reconnect lifecycle must leave MCU power with display" >&2
+  exit 1
+fi
+
+if ! grep -q 'PrimeColdBootMcuPower' "$ROOT/src/rsinputd.cpp" ||
+   ! grep -q 'WriteMcuPowerState(WriteMcuPowerControl, nullptr, true)' \
+     "$ROOT/src/rsinputd.cpp" ||
+   grep -q 'WriteMcuPowerState(WriteMcuPowerControl, nullptr, false)' \
+     "$ROOT/src/rsinputd.cpp"; then
+  echo "error: cold boot must prime MCU on once without daemon power-off" >&2
   exit 1
 fi
 
