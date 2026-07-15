@@ -142,15 +142,32 @@ if ! grep -qx 'on boot && property:ro.product.device=odin2_mini' "$ROOT/rsinputd
   exit 1
 fi
 
-if ! grep -qx 'service odinfand /system/bin/odinfand' "$ROOT/odinfand.rc" ||
-   ! grep -qx '    disabled' "$ROOT/odinfand.rc" ||
-   grep -qx '    oneshot' "$ROOT/odinfand.rc"; then
-  echo "error: odinfand must be a persistent disabled system service" >&2
+odinfand_expected="$BUILD_DIR/odinfand.rc.expected"
+cat >"$odinfand_expected" <<'EOF'
+# SPDX-License-Identifier: Apache-2.0
+
+service odinfand /system/bin/odinfand
+    class late_start
+    user system
+    group system
+EOF
+if ! cmp -s "$odinfand_expected" "$ROOT/odinfand.rc"; then
+  echo "error: odinfand rc must exactly define the persistent late_start system service" >&2
   exit 1
 fi
 
 if grep -Eq '^[[:space:]]*on |^[[:space:]]*start odinfand' "$ROOT/odinfand.rc"; then
-  echo "error: odinfand must not start before product and SELinux wiring are proven" >&2
+  echo "error: odinfand must rely only on its product-selected late_start class" >&2
+  exit 1
+fi
+
+odinfand_module="$(sed -n '/^[[:space:]]*cc_binary[[:space:]]*{/,/^}/p' "$ROOT/Android.bp" |
+  sed -n '/name: "odinfand"/,/^}/p')"
+if ! printf '%s\n' "$odinfand_module" | grep -qx '    name: "odinfand",' ||
+   ! printf '%s\n' "$odinfand_module" | grep -qx '    srcs: \["src/odinfand.cpp"\],' ||
+   ! printf '%s\n' "$odinfand_module" | grep -qx '    init_rc: \["odinfand.rc"\],' ||
+   printf '%s\n' "$odinfand_module" | grep -Eq '^[[:space:]]*vendor:[[:space:]]*true'; then
+  echo "error: system odinfand binary and init rc wiring must remain exact" >&2
   exit 1
 fi
 

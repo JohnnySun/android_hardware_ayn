@@ -4,4 +4,3 @@ service odinfand /system/bin/odinfand
     class late_start
     user system
     group system
-    disabled

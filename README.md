@@ -13,13 +13,15 @@ host-tested. The Linux I/O layer is intentionally narrow and has not been
 executed on a device; a device product must opt in to the disabled init service
 separately.
 
-`odinfand` is a disabled-by-default native Binder service for the Odin2 Mini.
+`odinfand` is a native Binder service for the Odin2 Mini. The Odin2 Mini
+product includes it explicitly and starts it with Android's `late_start` class.
 Its private unstable `com.ayn.fan.IOdinFan/default` interface exposes only Off,
 Quiet, and Sport. The host-tested core owns the exact gpio5 PWM paths, serializes
 transactions, keeps PWM period separate from tach, disables before every mode
 change, and attempts a confirmed Off state on every gated transaction failure.
-The init service remains disabled with no start trigger because device product,
-SELinux, and service-context wiring are not included in this repository phase.
+The device product owns the SELinux and service-context wiring. The daemon
+still rejects any product identity other than the exact Odin2 Mini identity
+before it touches the fan nodes.
 
 `libayn_fan_status_core` is an independent, read-only Q9 status reader. It
 requires both the exact `odin2_mini` product identity and the stock `Q9` retro
