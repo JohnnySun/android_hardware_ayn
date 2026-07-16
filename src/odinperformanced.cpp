@@ -49,16 +49,15 @@ class OdinPerformanceBinder final
   explicit OdinPerformanceBinder(ayn::performance::DeviceIdentity identity)
       : core_(std::move(identity), ayn::performance::StockSysfsPaths(),
               ayn::performance::ReadPosixFile, nullptr,
-              nullptr, nullptr,
-              ayn::performance::ControlPolicy::ReadOnly()) {}
+              ayn::performance::WritePosixFile, nullptr,
+              ayn::performance::ControlPolicy::StockNormalOnly()) {}
 
   ayn::performance::PerformanceResponse Initialize() {
     return core_.Initialize();
   }
 
-  ayn::performance::PerformanceResponse RestoreSystemManaged() {
-    return core_.SetMode(
-        ayn::performance::PerformanceMode::kSystemManaged);
+  ayn::performance::PerformanceResponse BeginShutdown() {
+    return core_.BeginShutdown();
   }
 
   ::ndk::ScopedAStatus getStatus(
@@ -112,7 +111,7 @@ int main() {
   if (registration != STATUS_OK) {
     LOG(ERROR) << "failed to register " << kServiceName
                << "; status=" << registration;
-    service->RestoreSystemManaged();
+    service->BeginShutdown();
     return EXIT_FAILURE;
   }
 
@@ -124,7 +123,7 @@ int main() {
       _exit(EXIT_FAILURE);
     }
     const ayn::performance::PerformanceResponse restore =
-        service->RestoreSystemManaged();
+        service->BeginShutdown();
     if (restore.result != ayn::performance::PerformanceResult::kOk) {
       LOG(ERROR) << "shutdown baseline restore failed; result="
                  << AidlResult(restore.result);
@@ -134,6 +133,6 @@ int main() {
   }).detach();
 
   ABinderProcess_joinThreadPool();
-  service->RestoreSystemManaged();
+  service->BeginShutdown();
   return EXIT_FAILURE;
 }

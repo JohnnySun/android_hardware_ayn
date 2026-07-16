@@ -34,9 +34,9 @@ enum class PerformanceResult {
 
 struct ControlPolicy {
   static constexpr ControlPolicy ReadOnly() { return {false}; }
-  static constexpr ControlPolicy NormalTestOnly() { return {true}; }
+  static constexpr ControlPolicy StockNormalOnly() { return {true}; }
 
-  bool normal_write_enabled;
+  bool stock_normal_write_enabled;
 };
 
 struct DeviceIdentity {
@@ -73,6 +73,7 @@ class PerformanceService {
   PerformanceResponse Initialize();
   PerformanceResponse GetStatus();
   PerformanceResponse SetMode(PerformanceMode mode);
+  PerformanceResponse BeginShutdown();
 
  private:
   using Snapshot = std::array<uint64_t, kPerformanceNodeCount>;
@@ -86,6 +87,7 @@ class PerformanceService {
   bool RollbackLocked(const Snapshot& snapshot,
                       const std::array<size_t, kPerformanceNodeCount>& touched,
                       size_t touched_count);
+  PerformanceResponse RestoreBaselineFromLatchLocked();
   PerformanceResponse ApplySnapshotLocked(PerformanceMode mode,
                                           const Snapshot& target);
   Snapshot TargetForModeLocked(PerformanceMode mode) const;
@@ -101,6 +103,7 @@ class PerformanceService {
   PerformanceMode active_mode_ = PerformanceMode::kSystemManaged;
   bool initialized_ = false;
   bool rollback_failed_ = false;
+  bool shutdown_started_ = false;
   std::mutex mutex_;
 };
 

@@ -46,6 +46,7 @@ struct Harness {
   std::vector<std::string> events;
   size_t write_count = 0;
   size_t fail_write_at = 0;
+  size_t fail_write_after_mutation_at = 0;
   bool transaction_failed = false;
   size_t fail_rollback_write_at = 0;
 
@@ -82,6 +83,10 @@ bool WriteFile(void* context, const std::string& path,
     return false;
   }
   harness->files[path] = value + "\n";
+  if (harness->fail_write_after_mutation_at == harness->write_count) {
+    harness->transaction_failed = true;
+    return false;
+  }
   return true;
 }
 
@@ -179,10 +184,10 @@ void ProductionReadOnlyPolicyNeedsNoWriter() {
   CHECK(harness.write_count == 0);
 }
 
-void HighAndPerformanceRemainUnavailableUnderNormalTestPolicy() {
+void HighAndPerformanceRemainUnavailableUnderStockNormalPolicy() {
   Harness harness;
   PerformanceService service =
-      Service(&harness, ControlPolicy::NormalTestOnly());
+      Service(&harness, ControlPolicy::StockNormalOnly());
   CHECK(service.Initialize().result == PerformanceResult::kOk);
   harness.events.clear();
 
@@ -195,10 +200,10 @@ void HighAndPerformanceRemainUnavailableUnderNormalTestPolicy() {
   CHECK(harness.write_count == 0);
 }
 
-void TestOnlyNormalTransitionCanRestoreStartupBaseline() {
+void StockNormalTransitionCanRestoreStartupBaseline() {
   Harness harness;
   PerformanceService service =
-      Service(&harness, ControlPolicy::NormalTestOnly());
+      Service(&harness, ControlPolicy::StockNormalOnly());
   CHECK(service.Initialize().result == PerformanceResult::kOk);
 
   CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
@@ -215,7 +220,7 @@ void TestOnlyNormalTransitionCanRestoreStartupBaseline() {
 void FailedNormalTransitionRollsBackOrLocksFurtherWrites() {
   Harness rollback;
   PerformanceService rollback_service =
-      Service(&rollback, ControlPolicy::NormalTestOnly());
+      Service(&rollback, ControlPolicy::StockNormalOnly());
   CHECK(rollback_service.Initialize().result == PerformanceResult::kOk);
   rollback.fail_write_at = 4;
   CHECK(rollback_service.SetMode(PerformanceMode::kStockNormal).result ==
@@ -226,7 +231,7 @@ void FailedNormalTransitionRollsBackOrLocksFurtherWrites() {
 
   Harness failed_rollback;
   PerformanceService failed_service =
-      Service(&failed_rollback, ControlPolicy::NormalTestOnly());
+      Service(&failed_rollback, ControlPolicy::StockNormalOnly());
   CHECK(failed_service.Initialize().result == PerformanceResult::kOk);
   failed_rollback.fail_write_at = 4;
   failed_rollback.fail_rollback_write_at = 5;
@@ -238,6 +243,74 @@ void FailedNormalTransitionRollsBackOrLocksFurtherWrites() {
   CHECK(failed_rollback.write_count == writes);
 }
 
+void WriterFailureAfterMutationRollsBackTheAttemptedNode() {
+  Harness harness;
+  PerformanceService service =
+      Service(&harness, ControlPolicy::StockNormalOnly());
+  CHECK(service.Initialize().result == PerformanceResult::kOk);
+  harness.fail_write_after_mutation_at = 3;
+
+  CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
+        PerformanceResult::kWriteFailed);
+  CHECK(Values(harness) == kBaseline);
+  CHECK(service.GetStatus().active_mode ==
+        PerformanceMode::kSystemManaged);
+}
+
+void RollbackLatchRequiresACompletePointByPointBaselineRestore() {
+  Harness harness;
+  PerformanceService service =
+      Service(&harness, ControlPolicy::StockNormalOnly());
+  CHECK(service.Initialize().result == PerformanceResult::kOk);
+  harness.fail_write_at = 4;
+  harness.fail_rollback_write_at = 5;
+  CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
+        PerformanceResult::kRollbackFailed);
+
+  harness.fail_rollback_write_at = 0;
+  const size_t latched_writes = harness.write_count;
+  CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
+        PerformanceResult::kRollbackFailed);
+  CHECK(harness.write_count == latched_writes);
+
+  harness.fail_write_at = harness.write_count + 3;
+  CHECK(service.SetMode(PerformanceMode::kSystemManaged).result ==
+        PerformanceResult::kRollbackFailed);
+  CHECK(harness.write_count == latched_writes + kNodeCount);
+  CHECK(service.GetStatus().result == PerformanceResult::kRollbackFailed);
+
+  const size_t partial_restore_writes = harness.write_count;
+  CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
+        PerformanceResult::kRollbackFailed);
+  CHECK(harness.write_count == partial_restore_writes);
+
+  harness.fail_write_at = 0;
+  CHECK(service.SetMode(PerformanceMode::kSystemManaged).result ==
+        PerformanceResult::kOk);
+  CHECK(harness.write_count == partial_restore_writes + kNodeCount);
+  CHECK(Values(harness) == kBaseline);
+  CHECK(service.GetStatus().result == PerformanceResult::kOk);
+  CHECK(service.GetStatus().active_mode ==
+        PerformanceMode::kSystemManaged);
+}
+
+void ShutdownLatchRestoresBaselineAndRejectsLaterWrites() {
+  Harness harness;
+  PerformanceService service =
+      Service(&harness, ControlPolicy::StockNormalOnly());
+  CHECK(service.Initialize().result == PerformanceResult::kOk);
+  CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
+        PerformanceResult::kOk);
+
+  CHECK(service.BeginShutdown().result == PerformanceResult::kOk);
+  CHECK(Values(harness) == kBaseline);
+  const size_t shutdown_writes = harness.write_count;
+  CHECK(service.SetMode(PerformanceMode::kStockNormal).result ==
+        PerformanceResult::kModeUnavailable);
+  CHECK(harness.write_count == shutdown_writes);
+  CHECK(Values(harness) == kBaseline);
+}
+
 }  // namespace
 
 int main() {
@@ -246,9 +319,12 @@ int main() {
     InitializationIsReadOnlyAndReportsSystemManaged();
     DefaultPolicyCannotWriteAnyMode();
     ProductionReadOnlyPolicyNeedsNoWriter();
-    HighAndPerformanceRemainUnavailableUnderNormalTestPolicy();
-    TestOnlyNormalTransitionCanRestoreStartupBaseline();
+    HighAndPerformanceRemainUnavailableUnderStockNormalPolicy();
+    StockNormalTransitionCanRestoreStartupBaseline();
     FailedNormalTransitionRollsBackOrLocksFurtherWrites();
+    WriterFailureAfterMutationRollsBackTheAttemptedNode();
+    RollbackLatchRequiresACompletePointByPointBaselineRestore();
+    ShutdownLatchRestoresBaselineAndRejectsLaterWrites();
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

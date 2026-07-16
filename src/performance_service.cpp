@@ -152,6 +152,23 @@ bool PerformanceService::RollbackLocked(
   return restored;
 }
 
+PerformanceResponse PerformanceService::RestoreBaselineFromLatchLocked() {
+  bool restored = true;
+  for (size_t index = 0; index < kPerformanceNodeCount; ++index) {
+    if (!WriteValueLocked(index, baseline_[index])) {
+      restored = false;
+    }
+  }
+  if (!restored) {
+    return ResponseLocked(PerformanceResult::kRollbackFailed,
+                          PerformanceMode::kSystemManaged);
+  }
+  rollback_failed_ = false;
+  active_mode_ = PerformanceMode::kSystemManaged;
+  return ResponseLocked(PerformanceResult::kOk,
+                        PerformanceMode::kSystemManaged);
+}
+
 PerformanceService::Snapshot PerformanceService::TargetForModeLocked(
     PerformanceMode mode) const {
   switch (mode) {
@@ -206,6 +223,7 @@ PerformanceResponse PerformanceService::ApplySnapshotLocked(
   size_t touched_count = 0;
 
   for (size_t index = 0; index < kPerformanceNodeCount; ++index) {
+    touched[touched_count++] = index;
     if (!write_file_(writer_context_, paths_.nodes[index],
                      std::to_string(target[index]))) {
       if (!RollbackLocked(before, touched, touched_count)) {
@@ -214,7 +232,6 @@ PerformanceResponse PerformanceService::ApplySnapshotLocked(
       }
       return ResponseLocked(PerformanceResult::kWriteFailed, mode);
     }
-    touched[touched_count++] = index;
     uint64_t observed = 0;
     if (!ReadValueLocked(index, &observed) || observed != target[index]) {
       if (!RollbackLocked(before, touched, touched_count)) {
@@ -234,7 +251,13 @@ PerformanceResponse PerformanceService::SetMode(PerformanceMode mode) {
   if (!initialized_) {
     return ResponseLocked(PerformanceResult::kNotInitialized, mode);
   }
+  if (shutdown_started_) {
+    return ResponseLocked(PerformanceResult::kModeUnavailable, mode);
+  }
   if (rollback_failed_) {
+    if (mode == PerformanceMode::kSystemManaged) {
+      return RestoreBaselineFromLatchLocked();
+    }
     return ResponseLocked(PerformanceResult::kRollbackFailed, mode);
   }
   if (!IsSupportedMode(mode)) {
@@ -243,13 +266,30 @@ PerformanceResponse PerformanceService::SetMode(PerformanceMode mode) {
   if (mode == PerformanceMode::kPerformance ||
       mode == PerformanceMode::kHigh ||
       (mode == PerformanceMode::kStockNormal &&
-       (!policy_.normal_write_enabled || write_file_ == nullptr))) {
+       (!policy_.stock_normal_write_enabled || write_file_ == nullptr))) {
     return ResponseLocked(PerformanceResult::kModeUnavailable, mode);
   }
   if (mode == active_mode_) {
     return ResponseLocked(PerformanceResult::kOk, mode);
   }
   return ApplySnapshotLocked(mode, TargetForModeLocked(mode));
+}
+
+PerformanceResponse PerformanceService::BeginShutdown() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!initialized_) {
+    return ResponseLocked(PerformanceResult::kNotInitialized,
+                          PerformanceMode::kSystemManaged);
+  }
+  shutdown_started_ = true;
+  if (rollback_failed_) {
+    return RestoreBaselineFromLatchLocked();
+  }
+  if (active_mode_ == PerformanceMode::kSystemManaged) {
+    return ResponseLocked(PerformanceResult::kOk,
+                          PerformanceMode::kSystemManaged);
+  }
+  return ApplySnapshotLocked(PerformanceMode::kSystemManaged, baseline_);
 }
 
 }  // namespace ayn::performance

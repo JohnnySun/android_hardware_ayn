@@ -314,7 +314,9 @@ if ! grep -q 'com.ayn.performance.IOdinPerformance/default' \
    ! grep -q 'ro.product.device' "$ROOT/src/odinperformanced.cpp" ||
    ! grep -q 'ro.product.name' "$ROOT/src/odinperformanced.cpp" ||
    ! grep -q 'ro.product.vendor.model' "$ROOT/src/odinperformanced.cpp" ||
-   ! grep -q 'ControlPolicy::ReadOnly' "$ROOT/src/odinperformanced.cpp"; then
+   ! grep -q 'WritePosixFile' "$ROOT/src/odinperformanced.cpp" ||
+   ! grep -q 'ControlPolicy::StockNormalOnly' \
+      "$ROOT/src/odinperformanced.cpp"; then
   echo "error: performance daemon registration or exact identity inputs are incomplete" >&2
   exit 1
 fi
@@ -329,11 +331,11 @@ if grep -Eq '(^|[^[:alnum:]_])(system|popen|execl?|execv|chmod|setenforce)[[:spa
   exit 1
 fi
 
-if grep -Eq 'WritePosixFile|O_WRONLY|O_RDWR' \
+if grep -Eq 'O_RDWR' \
      "$ROOT/include/ayn/performance_adapter.h" \
      "$ROOT/src/performance_adapter.cpp" \
      "$ROOT/src/odinperformanced.cpp"; then
-  echo "error: unwired performance daemon must remain physically read only" >&2
+  echo "error: performance writer must remain write-only" >&2
   exit 1
 fi
 
