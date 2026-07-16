@@ -82,6 +82,16 @@ echo "CXX=$CXX"
   -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I"$ROOT/include" \
+  "$ROOT/src/rsinput_uart.cpp" \
+  "$ROOT/tests/rsinput_uart_test.cpp" \
+  -o "$BUILD_DIR/rsinput_uart_test"
+"$BUILD_DIR/rsinput_uart_test"
+
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
   "$ROOT/src/fan_policy.cpp" \
   "$ROOT/src/fan_lifecycle.cpp" \
   "$ROOT/tests/fan_service_test.cpp" \

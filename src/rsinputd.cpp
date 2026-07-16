@@ -5,6 +5,7 @@
 #include "ayn/rsinput_mapping.h"
 #include "ayn/rsinput_lifecycle.h"
 #include "ayn/rsinput_parser.h"
+#include "ayn/rsinput_uart.h"
 
 #include <aidl/com/ayn/controller/BnOdinController.h>
 #include <aidl/com/ayn/controller/ControllerProfileResponse.h>
@@ -174,7 +175,7 @@ ayn::rsinput::StartupResult SkipRuntimeMcuPowerSettle(void*) {
 }
 
 int OpenConfiguredUart() {
-  const int fd = open(kUartPath, O_RDWR | O_NOCTTY | O_CLOEXEC);
+  const int fd = open(kUartPath, ayn::rsinput::RuntimeUartOpenFlags());
   if (fd < 0) {
     PLOG(ERROR) << "cannot open RSInput UART";
     return -1;
@@ -385,14 +386,18 @@ ayn::rsinput::HandshakeReadResult ReadHandshakeBytes(
     // The stock VMIN=16 setting belongs to a dedicated RX thread. Startup TX
     // shares this loop, so a one-byte read keeps every 100 ms deadline live.
     const ssize_t received = read(uart_fd, data, std::min<size_t>(capacity, 1));
-    if (received < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
+    const int read_error = errno;
+    const ayn::rsinput::UartReadDisposition disposition =
+        ayn::rsinput::ClassifyUartRead(received, read_error);
+    if (disposition == ayn::rsinput::UartReadDisposition::kRetry) {
+      continue;
+    }
+    if (disposition == ayn::rsinput::UartReadDisposition::kFailed) {
+      errno = read_error;
       PLOG(ERROR) << "RSInput UART handshake read failed";
       return ayn::rsinput::HandshakeReadResult::kFailed;
     }
-    if (received == 0) {
+    if (disposition == ayn::rsinput::UartReadDisposition::kClosed) {
       LOG(ERROR) << "RSInput UART closed during handshake";
       return ayn::rsinput::HandshakeReadResult::kFailed;
     }
@@ -497,17 +502,21 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
     }
 
     const ssize_t received = read(uart_fd, buffer.data(), buffer.size());
-    if (received < 0) {
-      if (errno == EINTR) {
-        if (g_stop_requested != 0) {
-          return ayn::rsinput::StartupResult::kStopped;
-        }
-        continue;
+    const int read_error = errno;
+    const ayn::rsinput::UartReadDisposition disposition =
+        ayn::rsinput::ClassifyUartRead(received, read_error);
+    if (disposition == ayn::rsinput::UartReadDisposition::kRetry) {
+      if (g_stop_requested != 0) {
+        return ayn::rsinput::StartupResult::kStopped;
       }
+      continue;
+    }
+    if (disposition == ayn::rsinput::UartReadDisposition::kFailed) {
+      errno = read_error;
       PLOG(ERROR) << "RSInput UART read failed";
       return ayn::rsinput::StartupResult::kFailed;
     }
-    if (received == 0) {
+    if (disposition == ayn::rsinput::UartReadDisposition::kClosed) {
       LOG(ERROR) << "RSInput UART closed";
       return ayn::rsinput::StartupResult::kFailed;
     }

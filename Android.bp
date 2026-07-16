@@ -66,6 +66,7 @@ cc_library_static {
         "src/rsinput_lifecycle.cpp",
         "src/rsinput_poll.cpp",
         "src/rsinput_protocol.cpp",
+        "src/rsinput_uart.cpp",
     ],
     static_libs: ["libayn_rsinput_parser"],
     export_include_dirs: ["include"],
@@ -162,6 +163,19 @@ cc_test {
         "-Wextra",
         "-Werror",
     ],
+}
+
+cc_test_host {
+    name: "ayn_rsinput_uart_test",
+    defaults: ["ayn_host_test_defaults"],
+    srcs: ["tests/rsinput_uart_test.cpp"],
+    static_libs: ["libayn_rsinputd_core"],
+    cflags: [
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+    ],
+    test_suites: ["general-tests"],
 }
 
 cc_test_host {
