@@ -3,7 +3,6 @@
 
 #include "ayn/fan_lifecycle.h"
 
-#include <cstdint>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -57,9 +56,9 @@ class FanService {
              void* sleep_context);
 
   FanResponse GetStatus();
-  FanResponse SetMode(FanMode mode, uintptr_t owner_token, bool owner_alive);
+  FanResponse SetMode(FanMode mode);
+  FanResponse InitializeSafeDefault();
   FanResponse Refresh();
-  FanResponse OwnerDied(uintptr_t owner_token);
   FanResponse ForceOff();
 
  private:
@@ -99,7 +98,6 @@ class FanService {
   FanCurveController curve_controller_;
   FanMode active_mode_ = FanMode::kOff;
   std::optional<FanSnapshot> current_snapshot_;
-  uintptr_t owner_token_ = 0;
   std::mutex mutex_;
 };
 

@@ -18,5 +18,30 @@ class ControllerAidlContractTest(unittest.TestCase):
         )
 
 
+class FanOwnershipContractTest(unittest.TestCase):
+    def test_set_mode_has_no_client_owner_token(self):
+        source = (
+            ROOT / "aidl/com/ayn/fan/IOdinFan.aidl"
+        ).read_text(encoding="utf-8")
+        self.assertIn("FanResponse setMode(int mode);", source)
+        self.assertNotIn("android.os.IBinder", source)
+        self.assertNotIn("owner", source)
+
+    def test_daemon_owns_mode_without_client_death_link(self):
+        source = (ROOT / "src/odinfand.cpp").read_text(encoding="utf-8")
+        self.assertNotIn("AIBinder_linkToDeath", source)
+        self.assertNotIn("AIBinder_unlinkToDeath", source)
+        self.assertNotIn("OwnerDied", source)
+
+    def test_safe_default_precedes_binder_registration(self):
+        source = (ROOT / "src/odinfand.cpp").read_text(encoding="utf-8")
+        startup = source.index("InitializeSafeDefault()")
+        registration = source.index("AServiceManager_addService")
+        self.assertLess(startup, registration)
+        between = source[startup:registration]
+        self.assertIn("startup.result != ayn::fan::FanResult::kOk", between)
+        self.assertIn("return EXIT_FAILURE", between)
+
+
 if __name__ == "__main__":
     unittest.main()

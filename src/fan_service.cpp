@@ -166,7 +166,6 @@ bool FanService::ApplyOffBestEffortLocked(FanSnapshot* snapshot) {
 }
 
 FanResponse FanService::FailLocked(FanMode requested_mode, FanResult result) {
-  owner_token_ = 0;
   return ApplyOffBestEffortLocked(nullptr)
              ? FanResponse{result, requested_mode, std::nullopt}
              : FanResponse{FanResult::kDisableUnconfirmed, requested_mode,
@@ -209,15 +208,11 @@ FanResponse FanService::ApplyModeLocked(FanMode mode, int duty) {
   return {FanResult::kOk, mode, current_snapshot_};
 }
 
-FanResponse FanService::SetMode(FanMode mode, uintptr_t owner_token,
-                                bool owner_alive) {
+FanResponse FanService::SetMode(FanMode mode) {
   std::lock_guard<std::mutex> lock(mutex_);
   const FanResult gate = GateResultLocked();
   if (gate != FanResult::kOk) {
     return {gate, mode, std::nullopt};
-  }
-  if (owner_token == 0 || !owner_alive) {
-    return FailLocked(mode, FanResult::kInvalidOwner);
   }
   if (!IsAidlMode(mode)) {
     return FailLocked(mode, FanResult::kInvalidMode);
@@ -239,10 +234,15 @@ FanResponse FanService::SetMode(FanMode mode, uintptr_t owner_token,
     }
     response = ApplyModeLocked(mode, decision.duty_ns);
   }
-  if (response.result == FanResult::kOk) {
-    owner_token_ = mode == FanMode::kOff ? 0 : owner_token;
-  }
   return response;
+}
+
+FanResponse FanService::InitializeSafeDefault() {
+  const FanResponse baseline = ForceOff();
+  if (baseline.result != FanResult::kOk) {
+    return baseline;
+  }
+  return SetMode(FanMode::kQuiet);
 }
 
 FanResponse FanService::Refresh() {
@@ -251,9 +251,11 @@ FanResponse FanService::Refresh() {
   if (gate != FanResult::kOk) {
     return {gate, active_mode_, std::nullopt};
   }
-  if (owner_token_ == 0 || !IsAutomaticMode(active_mode_) ||
-      !current_snapshot_.has_value()) {
-    return {FanResult::kNotOwner, FanMode::kOff, std::nullopt};
+  if (!IsAutomaticMode(active_mode_)) {
+    return {FanResult::kOk, active_mode_, current_snapshot_};
+  }
+  if (!current_snapshot_.has_value()) {
+    return FailLocked(active_mode_, FanResult::kIoError);
   }
 
   const FanMode mode = active_mode_;
@@ -301,7 +303,6 @@ FanResponse FanService::GetStatus() {
   FanMode mode = FanMode::kOff;
   if (raw.state == 0 && raw.duty == kOffDuty) {
     mode = FanMode::kOff;
-    owner_token_ = 0;
     curve_controller_.Reset();
     active_mode_ = FanMode::kOff;
   } else if (raw.state == 1 && IsAutomaticMode(active_mode_) &&
@@ -326,26 +327,8 @@ FanResponse FanService::GetStatus() {
   return {FanResult::kOk, mode, current_snapshot_};
 }
 
-FanResponse FanService::OwnerDied(uintptr_t owner_token) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (owner_token == 0 || owner_token_ != owner_token) {
-    return {FanResult::kNotOwner, FanMode::kOff, std::nullopt};
-  }
-  owner_token_ = 0;
-  const FanResult gate = GateResultLocked();
-  if (gate != FanResult::kOk) {
-    return {gate, FanMode::kOff, std::nullopt};
-  }
-  FanSnapshot snapshot{};
-  return ApplyOffBestEffortLocked(&snapshot)
-             ? FanResponse{FanResult::kOk, FanMode::kOff, snapshot}
-             : FanResponse{FanResult::kDisableUnconfirmed, FanMode::kOff,
-                           std::nullopt};
-}
-
 FanResponse FanService::ForceOff() {
   std::lock_guard<std::mutex> lock(mutex_);
-  owner_token_ = 0;
   const FanResult gate = GateResultLocked();
   if (gate != FanResult::kOk) {
     return {gate, FanMode::kOff, std::nullopt};

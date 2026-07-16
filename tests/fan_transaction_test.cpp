@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <exception>
 #include <iostream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -155,8 +156,7 @@ void ExactIdentityAndPathsGateAllIo() {
                              &identity.vendor_model};
     *fields[index] += ".wrong";
     FanService identity_service = Service(&wrong_identity, identity);
-    const FanResponse response =
-        identity_service.SetMode(FanMode::kQuiet, 1, true);
+    const FanResponse response = identity_service.SetMode(FanMode::kQuiet);
     CHECK(response.result == FanResult::kUnsupportedDevice);
     CheckNoSnapshot(response);
     CHECK(wrong_identity.events.empty());
@@ -171,46 +171,24 @@ void ExactIdentityAndPathsGateAllIo() {
     FanService path_service = Service(
         &wrong_path, {"odin2_mini", "lineage_odin2_mini", "Odin2 Mini"},
         paths);
-    const FanResponse response =
-        path_service.SetMode(FanMode::kQuiet, 1, true);
+    const FanResponse response = path_service.SetMode(FanMode::kQuiet);
     CHECK(response.result == FanResult::kUnexpectedPaths);
     CheckNoSnapshot(response);
     CHECK(wrong_path.events.empty());
   }
 }
 
-void InvalidModeAndOwnerFailClosed() {
-  for (const auto& request : {
-           std::pair<int, bool>{static_cast<int>(FanMode::kQuiet), false},
-           std::pair<int, bool>{99, true},
-       }) {
-    Harness harness;
-    harness.files[kExpectedPaths.state] = "1\n";
-    harness.files[kExpectedPaths.duty] = "25000\n";
-    harness.files[kExpectedPaths.speed] = "3000\n";
-    harness.tach_values = {"3000\n", "0\n"};
-    FanService service = Service(&harness);
-    const uintptr_t token = request.second ? 7 : 0;
-    const FanResponse response =
-        service.SetMode(static_cast<FanMode>(request.first), token,
-                        request.second);
-    CHECK(response.result ==
-          (request.second ? FanResult::kInvalidMode
-                          : FanResult::kInvalidOwner));
-    CheckNoSnapshot(response);
-    CHECK(harness.files[kExpectedPaths.state] == "0\n");
-  }
-
-  Harness dead;
-  dead.files[kExpectedPaths.state] = "1\n";
-  dead.files[kExpectedPaths.speed] = "3000\n";
-  dead.tach_values = {"3000\n", "0\n"};
-  FanService dead_service = Service(&dead);
-  const FanResponse response =
-      dead_service.SetMode(FanMode::kSport, 9, false);
-  CHECK(response.result == FanResult::kInvalidOwner);
+void InvalidModeFailsClosed() {
+  Harness harness;
+  harness.files[kExpectedPaths.state] = "1\n";
+  harness.files[kExpectedPaths.duty] = "25000\n";
+  harness.files[kExpectedPaths.speed] = "3000\n";
+  harness.tach_values = {"3000\n", "0\n"};
+  FanService service = Service(&harness);
+  const FanResponse response = service.SetMode(static_cast<FanMode>(99));
+  CHECK(response.result == FanResult::kInvalidMode);
   CheckNoSnapshot(response);
-  CHECK(dead.files[kExpectedPaths.state] == "0\n");
+  CHECK(harness.files[kExpectedPaths.state] == "0\n");
 }
 
 std::vector<std::string> ExpectedTransaction(FanMode mode, int temperature_c) {
@@ -244,7 +222,7 @@ void OffAndAutomaticModesUseExactWriteOrderAndCurveValues() {
       harness.enabled_tach = "1200\n";
     }
     FanService service = Service(&harness);
-    const FanResponse response = service.SetMode(mode, 11, true);
+    const FanResponse response = service.SetMode(mode);
     CHECK(response.result == FanResult::kOk);
     CHECK(response.snapshot.has_value());
     CHECK(response.snapshot->mode == mode);
@@ -263,12 +241,12 @@ void OffAndAutomaticModesUseExactWriteOrderAndCurveValues() {
 void OffDoesNotDependOnTemperatureAvailability() {
   Harness harness;
   FanService service = ServiceWithoutTemperature(&harness);
-  const FanResponse off = service.SetMode(FanMode::kOff, 1, true);
+  const FanResponse off = service.SetMode(FanMode::kOff);
   CHECK(off.result == FanResult::kOk);
   CHECK(off.snapshot.has_value());
   CHECK(off.snapshot->state == 0);
 
-  const FanResponse quiet = service.SetMode(FanMode::kQuiet, 1, true);
+  const FanResponse quiet = service.SetMode(FanMode::kQuiet);
   CHECK(quiet.result == FanResult::kTemperatureUnavailable);
   CHECK(harness.files[kExpectedPaths.state] == "0\n");
 }
@@ -277,7 +255,7 @@ void PeriodIsReadOnlyAndMustAlreadyMatch() {
   Harness harness;
   harness.files[kExpectedPaths.period] = "40000\n";
   FanService service = Service(&harness);
-  const FanResponse response = service.SetMode(FanMode::kQuiet, 1, true);
+  const FanResponse response = service.SetMode(FanMode::kQuiet);
   CHECK(response.result == FanResult::kDisableUnconfirmed);
   CheckNoSnapshot(response);
   for (const std::string& event : harness.events) {
@@ -289,7 +267,7 @@ void PeriodAndTachAreSeparateNodes() {
   Harness harness;
   harness.enabled_tach = "700\n";
   FanService service = Service(&harness);
-  const FanResponse response = service.SetMode(FanMode::kQuiet, 1, true);
+  const FanResponse response = service.SetMode(FanMode::kQuiet);
   CHECK(response.result == FanResult::kOk);
   CHECK(harness.files[kExpectedPaths.period] == "50000\n");
   CHECK(harness.files[kExpectedPaths.speed] == "700\n");
@@ -302,7 +280,7 @@ void EveryNormalReadAndWriteFailureCompensatesOff() {
   Harness baseline;
   baseline.enabled_tach = "900\n";
   FanService baseline_service = Service(&baseline);
-  CHECK(baseline_service.SetMode(FanMode::kSport, 1, true).result ==
+  CHECK(baseline_service.SetMode(FanMode::kSport).result ==
         FanResult::kOk);
   const size_t normal_reads = baseline.read_count;
   const size_t normal_writes = baseline.write_count;
@@ -312,7 +290,7 @@ void EveryNormalReadAndWriteFailureCompensatesOff() {
     harness.enabled_tach = "900\n";
     harness.fail_read_at = fail_at;
     FanService service = Service(&harness);
-    const FanResponse response = service.SetMode(FanMode::kSport, 1, true);
+    const FanResponse response = service.SetMode(FanMode::kSport);
     CHECK(response.result == FanResult::kIoError);
     CheckNoSnapshot(response);
     CHECK(harness.files[kExpectedPaths.state] == "0\n");
@@ -323,7 +301,7 @@ void EveryNormalReadAndWriteFailureCompensatesOff() {
     harness.enabled_tach = "900\n";
     harness.fail_write_at = fail_at;
     FanService service = Service(&harness);
-    const FanResponse response = service.SetMode(FanMode::kSport, 1, true);
+    const FanResponse response = service.SetMode(FanMode::kSport);
     CHECK(response.result == FanResult::kIoError);
     CheckNoSnapshot(response);
     CHECK(harness.files[kExpectedPaths.state] == "0\n");
@@ -334,8 +312,7 @@ void TachPollingIsBoundedAndFailClosed() {
   Harness enabled_timeout;
   enabled_timeout.enabled_tach = "0\n";
   FanService enabled_service = Service(&enabled_timeout);
-  const FanResponse enabled =
-      enabled_service.SetMode(FanMode::kQuiet, 1, true);
+  const FanResponse enabled = enabled_service.SetMode(FanMode::kQuiet);
   CHECK(enabled.result == FanResult::kTachTimeout);
   CheckNoSnapshot(enabled);
   CHECK(enabled_timeout.files[kExpectedPaths.state] == "0\n");
@@ -345,7 +322,7 @@ void TachPollingIsBoundedAndFailClosed() {
   off_timeout.files[kExpectedPaths.speed] = "500\n";
   off_timeout.tach_follows_state = false;
   FanService off_service = Service(&off_timeout);
-  const FanResponse off = off_service.SetMode(FanMode::kOff, 1, true);
+  const FanResponse off = off_service.SetMode(FanMode::kOff);
   CHECK(off.result == FanResult::kDisableUnconfirmed);
   CheckNoSnapshot(off);
   CHECK(off_timeout.read_count < 100);
@@ -357,7 +334,7 @@ void UnconfirmedOffHasDedicatedResultAndNoPartialSnapshot() {
   harness.files[kExpectedPaths.speed] = "1000\n";
   harness.fail_all_writes = true;
   FanService service = Service(&harness);
-  const FanResponse response = service.SetMode(FanMode::kSport, 1, true);
+  const FanResponse response = service.SetMode(FanMode::kSport);
   CHECK(response.result == FanResult::kDisableUnconfirmed);
   CheckNoSnapshot(response);
 }
@@ -366,7 +343,7 @@ void StatusIsCompleteOrCompensatesOff() {
   Harness valid;
   valid.enabled_tach = "800\n";
   FanService valid_service = Service(&valid);
-  CHECK(valid_service.SetMode(FanMode::kQuiet, 1, true).result ==
+  CHECK(valid_service.SetMode(FanMode::kQuiet).result ==
         FanResult::kOk);
   valid.events.clear();
   valid.write_count = 0;
@@ -392,7 +369,7 @@ void RefreshUsesHysteresisAndDebounceWithoutHunting() {
   Harness harness;
   harness.enabled_tach = "900\n";
   FanService service = Service(&harness);
-  CHECK(service.SetMode(FanMode::kQuiet, 1, true).snapshot->duty == 8000);
+  CHECK(service.SetMode(FanMode::kQuiet).snapshot->duty == 8000);
 
   harness.events.clear();
   harness.temperature_c = 51;
@@ -418,11 +395,11 @@ void RefreshUsesHysteresisAndDebounceWithoutHunting() {
         harness.events.end());
 }
 
-void MissingTemperatureFailsClosedAndClearsOwnership() {
+void MissingTemperatureFailsClosed() {
   Harness harness;
   harness.enabled_tach = "700\n";
   FanService service = Service(&harness);
-  CHECK(service.SetMode(FanMode::kSport, 9, true).result == FanResult::kOk);
+  CHECK(service.SetMode(FanMode::kSport).result == FanResult::kOk);
 
   harness.temperature_valid = false;
   harness.files[kExpectedPaths.speed] = "0\n";
@@ -430,14 +407,13 @@ void MissingTemperatureFailsClosedAndClearsOwnership() {
   CHECK(failed.result == FanResult::kTemperatureUnavailable);
   CheckNoSnapshot(failed);
   CHECK(harness.files[kExpectedPaths.state] == "0\n");
-  CHECK(service.OwnerDied(9).result == FanResult::kNotOwner);
 }
 
 void SteadyTemperatureRefreshDetectsAStalledFan() {
   Harness harness;
   harness.enabled_tach = "700\n";
   FanService service = Service(&harness);
-  CHECK(service.SetMode(FanMode::kSport, 9, true).result == FanResult::kOk);
+  CHECK(service.SetMode(FanMode::kSport).result == FanResult::kOk);
 
   harness.tach_follows_state = false;
   harness.files[kExpectedPaths.speed] = "0\n";
@@ -451,7 +427,7 @@ void HighTemperatureImmediatelyUsesSafeBoundedMaximum() {
   Harness harness;
   harness.enabled_tach = "1100\n";
   FanService service = Service(&harness);
-  CHECK(service.SetMode(FanMode::kQuiet, 3, true).result == FanResult::kOk);
+  CHECK(service.SetMode(FanMode::kQuiet).result == FanResult::kOk);
 
   harness.events.clear();
   harness.temperature_c = ayn::fan::kHighTemperatureC;
@@ -465,24 +441,78 @@ void HighTemperatureImmediatelyUsesSafeBoundedMaximum() {
         harness.events.end());
 }
 
-void CurrentOwnerDeathTurnsOffAndStaleDeathDoesNothing() {
+void ActiveModeRemainsDaemonOwnedAcrossRefresh() {
   Harness harness;
   harness.enabled_tach = "600\n";
   FanService service = Service(&harness);
-  CHECK(service.SetMode(FanMode::kQuiet, 1, true).result == FanResult::kOk);
-  CHECK(service.SetMode(FanMode::kSport, 2, true).result == FanResult::kOk);
+  CHECK(service.SetMode(FanMode::kSport).result == FanResult::kOk);
 
   harness.events.clear();
-  const FanResponse stale = service.OwnerDied(1);
-  CHECK(stale.result == FanResult::kNotOwner);
-  CHECK(harness.events.empty());
+  const FanResponse refreshed = service.Refresh();
+  CHECK(refreshed.result == FanResult::kOk);
+  CHECK(refreshed.snapshot.has_value());
+  CHECK(refreshed.snapshot->mode == FanMode::kSport);
+  CHECK(harness.files[kExpectedPaths.state] == "1\n");
+}
 
-  harness.files[kExpectedPaths.speed] = "0\n";
-  const FanResponse current = service.OwnerDied(2);
-  CHECK(current.result == FanResult::kOk);
-  CHECK(current.snapshot.has_value());
-  CHECK(current.snapshot->mode == FanMode::kOff);
+void StartupEstablishesOffBaselineThenQuietDefault() {
+  Harness harness;
+  harness.files[kExpectedPaths.state] = "1\n";
+  harness.files[kExpectedPaths.duty] = "25000\n";
+  harness.files[kExpectedPaths.speed] = "3000\n";
+  FanService service = Service(&harness);
+
+  const FanResponse startup = service.InitializeSafeDefault();
+
+  CHECK(startup.result == FanResult::kOk);
+  CHECK(startup.snapshot.has_value());
+  CHECK(startup.snapshot->mode == FanMode::kQuiet);
+  const std::vector<std::string> expected_writes = {
+      "W " + kExpectedPaths.state + "=0",
+      "W " + kExpectedPaths.duty + "=10000",
+      "W " + kExpectedPaths.state + "=0",
+      "W " + kExpectedPaths.duty + "=8000",
+      "W " + kExpectedPaths.state + "=1",
+  };
+  std::vector<std::string> writes;
+  std::copy_if(harness.events.begin(), harness.events.end(),
+               std::back_inserter(writes),
+               [](const std::string& event) {
+                 return event.rfind("W ", 0) == 0;
+               });
+  CHECK(writes == expected_writes);
+}
+
+void StartupFailureNeverReachesQuiet() {
+  Harness harness;
+  harness.files[kExpectedPaths.state] = "1\n";
+  harness.files[kExpectedPaths.speed] = "3000\n";
+  harness.fail_all_writes = true;
+  FanService service = Service(&harness);
+
+  const FanResponse startup = service.InitializeSafeDefault();
+
+  CHECK(startup.result != FanResult::kOk);
+  CHECK(std::find(harness.events.begin(), harness.events.end(),
+                  "W " + kExpectedPaths.state + "=1") ==
+        harness.events.end());
+}
+
+void StartupQuietFailureLeavesConfirmedOff() {
+  Harness harness;
+  harness.temperature_valid = false;
+  FanService service = Service(&harness);
+
+  const FanResponse startup = service.InitializeSafeDefault();
+
+  CHECK(startup.result == FanResult::kTemperatureUnavailable);
+  CHECK(!startup.snapshot.has_value());
   CHECK(harness.files[kExpectedPaths.state] == "0\n");
+  CHECK(harness.files[kExpectedPaths.duty] == "10000\n");
+  CHECK(harness.files[kExpectedPaths.speed] == "0\n");
+  CHECK(std::find(harness.events.begin(), harness.events.end(),
+                  "W " + kExpectedPaths.state + "=1") ==
+        harness.events.end());
 }
 
 void TransactionsAreSerialized() {
@@ -494,7 +524,7 @@ void TransactionsAreSerialized() {
   FanResponse second;
 
   std::thread first_thread(
-      [&] { first = service.SetMode(FanMode::kQuiet, 1, true); });
+      [&] { first = service.SetMode(FanMode::kQuiet); });
   {
     std::unique_lock<std::mutex> lock(harness.block_mutex);
     harness.block_cv.wait(lock, [&] { return harness.first_write_entered; });
@@ -502,7 +532,7 @@ void TransactionsAreSerialized() {
   const size_t events_at_block = harness.events.size();
   std::atomic<bool> second_done = false;
   std::thread second_thread([&] {
-    second = service.SetMode(FanMode::kSport, 2, true);
+    second = service.SetMode(FanMode::kSport);
     second_done = true;
   });
   std::this_thread::yield();
@@ -524,7 +554,7 @@ void TransactionsAreSerialized() {
 int main() {
   const std::vector<std::pair<std::string, void (*)()>> tests = {
       {"exact identity and paths gate all I/O", ExactIdentityAndPathsGateAllIo},
-      {"invalid mode and owner fail closed", InvalidModeAndOwnerFailClosed},
+      {"invalid mode fails closed", InvalidModeFailsClosed},
       {"off and automatic modes use exact write order and curve values",
        OffAndAutomaticModesUseExactWriteOrderAndCurveValues},
       {"off does not depend on temperature availability",
@@ -541,14 +571,18 @@ int main() {
       {"status is complete or compensates off", StatusIsCompleteOrCompensatesOff},
       {"refresh uses hysteresis and debounce without hunting",
        RefreshUsesHysteresisAndDebounceWithoutHunting},
-      {"missing temperature fails closed and clears ownership",
-       MissingTemperatureFailsClosedAndClearsOwnership},
+      {"missing temperature fails closed", MissingTemperatureFailsClosed},
       {"steady temperature refresh detects a stalled fan",
        SteadyTemperatureRefreshDetectsAStalledFan},
       {"high temperature immediately uses safe bounded maximum",
        HighTemperatureImmediatelyUsesSafeBoundedMaximum},
-      {"current owner death turns off and stale death does nothing",
-       CurrentOwnerDeathTurnsOffAndStaleDeathDoesNothing},
+      {"active mode remains daemon-owned across refresh",
+       ActiveModeRemainsDaemonOwnedAcrossRefresh},
+      {"startup establishes Off baseline then Quiet default",
+       StartupEstablishesOffBaselineThenQuietDefault},
+      {"startup failure never reaches Quiet", StartupFailureNeverReachesQuiet},
+      {"startup Quiet failure leaves confirmed Off",
+       StartupQuietFailureLeavesConfirmedOff},
       {"transactions are serialized", TransactionsAreSerialized},
   };
 

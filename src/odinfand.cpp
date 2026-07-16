@@ -14,12 +14,9 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <memory>
-#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
-#include <vector>
 
 #include <pthread.h>
 #include <unistd.h>
@@ -67,138 +64,36 @@ class OdinFanBinder final : public ::aidl::com::ayn::fan::BnOdinFan {
       : core_(std::move(identity), ayn::fan::StockSysfsPaths(),
               ayn::fan::ReadPosixFile, nullptr, ayn::fan::WritePosixFile,
               nullptr, ayn::fan::ReadCpuTemperature, nullptr,
-              SleepForMilliseconds, nullptr),
-        death_recipient_(AIBinder_DeathRecipient_new(OwnerDiedCallback)) {}
+              SleepForMilliseconds, nullptr) {}
+
+  ayn::fan::FanResponse InitializeSafeDefault() {
+    return core_.InitializeSafeDefault();
+  }
 
   ayn::fan::FanResponse ForceOff() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    ClearOwnerLocked();
     return core_.ForceOff();
   }
 
   ayn::fan::FanResponse Refresh() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const ayn::fan::FanResponse response = core_.Refresh();
-    if (response.result != ayn::fan::FanResult::kOk &&
-        response.result != ayn::fan::FanResult::kNotOwner) {
-      ClearOwnerLocked();
-    }
-    return response;
+    return core_.Refresh();
   }
 
   ::ndk::ScopedAStatus getStatus(
       ::aidl::com::ayn::fan::FanResponse* response) override {
-    std::lock_guard<std::mutex> lock(mutex_);
-    const ayn::fan::FanResponse core_response = core_.GetStatus();
-    if (core_response.result != ayn::fan::FanResult::kOk) {
-      ClearOwnerLocked();
-    }
-    *response = ToAidlResponse(core_response);
+    *response = ToAidlResponse(core_.GetStatus());
     return ::ndk::ScopedAStatus::ok();
   }
 
   ::ndk::ScopedAStatus setMode(
-      int32_t mode, const ::ndk::SpAIBinder& owner,
+      int32_t mode,
       ::aidl::com::ayn::fan::FanResponse* response) override {
-    std::lock_guard<std::mutex> lock(mutex_);
     const ayn::fan::FanMode fan_mode = static_cast<ayn::fan::FanMode>(mode);
-    if (owner.get() == nullptr || !AIBinder_isAlive(owner.get())) {
-      ClearOwnerLocked();
-      *response = ToAidlResponse(core_.SetMode(fan_mode, 0, false));
-      return ::ndk::ScopedAStatus::ok();
-    }
-
-    if (owner_.get() == owner.get()) {
-      const ayn::fan::FanResponse core_response =
-          core_.SetMode(fan_mode, owner_id_, true);
-      if (core_response.result != ayn::fan::FanResult::kOk ||
-          fan_mode == ayn::fan::FanMode::kOff) {
-        ClearOwnerLocked();
-      }
-      *response = ToAidlResponse(core_response);
-      return ::ndk::ScopedAStatus::ok();
-    }
-
-    auto cookie = std::make_unique<OwnerCookie>();
-    cookie->service = this;
-    cookie->id = next_owner_id_++;
-    OwnerCookie* const cookie_pointer = cookie.get();
-    cookies_.push_back(std::move(cookie));
-    const binder_status_t link_status = AIBinder_linkToDeath(
-        owner.get(), death_recipient_.get(), cookie_pointer);
-    if (link_status != STATUS_OK || !AIBinder_isAlive(owner.get())) {
-      if (link_status == STATUS_OK) {
-        AIBinder_unlinkToDeath(owner.get(), death_recipient_.get(),
-                               cookie_pointer);
-      }
-      ClearOwnerLocked();
-      *response = ToAidlResponse(core_.SetMode(fan_mode, 0, false));
-      return ::ndk::ScopedAStatus::ok();
-    }
-
-    const ayn::fan::FanResponse core_response =
-        core_.SetMode(fan_mode, cookie_pointer->id, true);
-    if (core_response.result == ayn::fan::FanResult::kOk &&
-        fan_mode != ayn::fan::FanMode::kOff) {
-      ClearOwnerLocked();
-      owner_ = owner;
-      owner_cookie_ = cookie_pointer;
-      owner_id_ = cookie_pointer->id;
-    } else {
-      AIBinder_unlinkToDeath(owner.get(), death_recipient_.get(),
-                             cookie_pointer);
-      ClearOwnerLocked();
-    }
-    *response = ToAidlResponse(core_response);
+    *response = ToAidlResponse(core_.SetMode(fan_mode));
     return ::ndk::ScopedAStatus::ok();
   }
 
  private:
-  struct OwnerCookie {
-    OdinFanBinder* service;
-    uintptr_t id;
-  };
-
-  static void OwnerDiedCallback(void* cookie) {
-    auto* owner_cookie = static_cast<OwnerCookie*>(cookie);
-    if (owner_cookie != nullptr && owner_cookie->service != nullptr) {
-      owner_cookie->service->HandleOwnerDeath(owner_cookie->id);
-    }
-  }
-
-  void HandleOwnerDeath(uintptr_t owner_id) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (owner_id == 0 || owner_id != owner_id_) {
-      return;
-    }
-    owner_.set(nullptr);
-    owner_cookie_ = nullptr;
-    owner_id_ = 0;
-    const ayn::fan::FanResponse response = core_.OwnerDied(owner_id);
-    if (response.result != ayn::fan::FanResult::kOk) {
-      LOG(ERROR) << "owner death could not confirm fan Off; result="
-                 << AidlResult(response.result);
-    }
-  }
-
-  void ClearOwnerLocked() {
-    if (owner_.get() != nullptr && owner_cookie_ != nullptr) {
-      AIBinder_unlinkToDeath(owner_.get(), death_recipient_.get(),
-                             owner_cookie_);
-    }
-    owner_.set(nullptr);
-    owner_cookie_ = nullptr;
-    owner_id_ = 0;
-  }
-
   ayn::fan::FanService core_;
-  ::ndk::ScopedAIBinder_DeathRecipient death_recipient_;
-  std::mutex mutex_;
-  ::ndk::SpAIBinder owner_;
-  OwnerCookie* owner_cookie_ = nullptr;
-  uintptr_t owner_id_ = 0;
-  uintptr_t next_owner_id_ = 1;
-  std::vector<std::unique_ptr<OwnerCookie>> cookies_;
 };
 
 }  // namespace
@@ -220,9 +115,9 @@ int main() {
   };
   auto service = ::ndk::SharedRefBase::make<OdinFanBinder>(std::move(identity));
 
-  const ayn::fan::FanResponse startup = service->ForceOff();
+  const ayn::fan::FanResponse startup = service->InitializeSafeDefault();
   if (startup.result != ayn::fan::FanResult::kOk) {
-    LOG(ERROR) << "refusing Binder registration before confirmed fan Off; result="
+    LOG(ERROR) << "refusing Binder registration before safe Quiet default; result="
                << AidlResult(startup.result);
     return EXIT_FAILURE;
   }
@@ -244,8 +139,7 @@ int main() {
       std::this_thread::sleep_for(std::chrono::seconds(
           ayn::fan::kAutomaticPollIntervalSeconds));
       const ayn::fan::FanResponse refresh = service->Refresh();
-      if (refresh.result != ayn::fan::FanResult::kOk &&
-          refresh.result != ayn::fan::FanResult::kNotOwner) {
+      if (refresh.result != ayn::fan::FanResult::kOk) {
         LOG(ERROR) << "automatic fan refresh failed closed; result="
                    << AidlResult(refresh.result);
       }

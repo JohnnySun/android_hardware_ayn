@@ -322,8 +322,18 @@ if ! grep -q 'name: "com.ayn.fan"' "$ROOT/Android.bp" ||
    ! grep -A8 'java: {' "$ROOT/Android.bp" | grep -q 'enabled: true' ||
    ! grep -qx 'interface IOdinFan {' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
    ! grep -qx '    FanResponse getStatus();' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
-   ! grep -qx '    FanResponse setMode(int mode, in IBinder owner);' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl"; then
+   ! grep -qx '    FanResponse setMode(int mode);' "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl"; then
   echo "error: private unstable IOdinFan AIDL contract is incomplete" >&2
+  exit 1
+fi
+
+if grep -Eq 'android\.os\.IBinder|owner' \
+     "$ROOT/aidl/com/ayn/fan/IOdinFan.aidl" ||
+   grep -Eq 'AIBinder_(link|unlink)ToDeath|OwnerDied' \
+     "$ROOT/src/odinfand.cpp" \
+     "$ROOT/include/ayn/fan_service.h" \
+     "$ROOT/src/fan_service.cpp"; then
+  echo "error: fan mode ownership must remain entirely inside odinfand" >&2
   exit 1
 fi
 
