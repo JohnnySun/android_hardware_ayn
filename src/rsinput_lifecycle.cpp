@@ -12,7 +12,7 @@
 
 namespace ayn::rsinput {
 
-bool RuntimeStreamWatchdog::ObserveTimeout(uint32_t elapsed_ms) {
+bool RuntimeStreamWatchdog::ObserveElapsed(uint32_t elapsed_ms) {
   if (idle_timeout_ms_ == 0 ||
       elapsed_ms >= idle_timeout_ms_ - idle_elapsed_ms_) {
     idle_elapsed_ms_ = idle_timeout_ms_;
@@ -22,7 +22,7 @@ bool RuntimeStreamWatchdog::ObserveTimeout(uint32_t elapsed_ms) {
   return false;
 }
 
-void RuntimeStreamWatchdog::ObserveData() {
+void RuntimeStreamWatchdog::ObserveStatus() {
   idle_elapsed_ms_ = 0;
 }
 

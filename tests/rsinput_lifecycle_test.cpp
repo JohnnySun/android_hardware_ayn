@@ -601,15 +601,16 @@ void InvalidRetryPolicyCannotEnterRuntimeIo() {
   CHECK(harness.retry_delays_ms.empty());
 }
 
-void RuntimeStreamWatchdogReconnectsAfterIdleAndResetsOnData() {
+void RuntimeStreamWatchdogReconnectsAfterIdleAndResetsOnlyOnStatus() {
   ayn::rsinput::RuntimeStreamWatchdog watchdog(1000);
 
-  CHECK(!watchdog.ObserveTimeout(999));
-  CHECK(watchdog.ObserveTimeout(1));
+  CHECK(!watchdog.ObserveElapsed(400));
+  CHECK(!watchdog.ObserveElapsed(599));
+  CHECK(watchdog.ObserveElapsed(1));
 
-  watchdog.ObserveData();
-  CHECK(!watchdog.ObserveTimeout(999));
-  CHECK(watchdog.ObserveTimeout(1));
+  watchdog.ObserveStatus();
+  CHECK(!watchdog.ObserveElapsed(999));
+  CHECK(watchdog.ObserveElapsed(1));
 }
 
 }  // namespace
@@ -654,8 +655,9 @@ int main() {
        StopDuringBackoffInterruptsBeforeAnotherAttempt},
       {"invalid retry policy cannot enter runtime I/O",
        InvalidRetryPolicyCannotEnterRuntimeIo},
-      {"runtime stream watchdog reconnects after idle and resets on data",
-       RuntimeStreamWatchdogReconnectsAfterIdleAndResetsOnData},
+      {"runtime stream watchdog reconnects after idle and resets only on "
+       "status",
+       RuntimeStreamWatchdogReconnectsAfterIdleAndResetsOnlyOnStatus},
   };
 
   size_t passed = 0;

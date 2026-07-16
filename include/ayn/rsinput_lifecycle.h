@@ -93,8 +93,8 @@ class RuntimeStreamWatchdog {
   explicit RuntimeStreamWatchdog(uint32_t idle_timeout_ms)
       : idle_timeout_ms_(idle_timeout_ms) {}
 
-  bool ObserveTimeout(uint32_t elapsed_ms);
-  void ObserveData();
+  bool ObserveElapsed(uint32_t elapsed_ms);
+  void ObserveStatus();
 
  private:
   uint32_t idle_timeout_ms_;

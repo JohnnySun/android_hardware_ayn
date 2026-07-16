@@ -481,6 +481,21 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
   ayn::rsinput::RuntimeStreamWatchdog stream_watchdog(
       kRuntimeStatusIdleTimeoutMs);
   std::array<uint8_t, 256> buffer{};
+  uint64_t last_watchdog_ms = MonotonicMilliseconds(nullptr);
+
+  const auto status_stream_expired =
+      [&stream_watchdog, &last_watchdog_ms](bool status_observed) {
+        const uint64_t now_ms = MonotonicMilliseconds(nullptr);
+        const uint64_t elapsed_ms = now_ms - last_watchdog_ms;
+        last_watchdog_ms = now_ms;
+        if (status_observed) {
+          stream_watchdog.ObserveStatus();
+          return false;
+        }
+        return stream_watchdog.ObserveElapsed(static_cast<uint32_t>(
+            std::min<uint64_t>(elapsed_ms,
+                               std::numeric_limits<uint32_t>::max())));
+      };
 
   while (g_stop_requested == 0 && !emitter.failed) {
     pollfd uart_poll{uart_fd, POLLIN, 0};
@@ -494,7 +509,7 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
       return ayn::rsinput::StartupResult::kFailed;
     }
     if (poll_result == 0) {
-      if (stream_watchdog.ObserveTimeout(kStopCheckIntervalMs)) {
+      if (status_stream_expired(false)) {
         LOG(WARNING) << "RSInput UART status stream idle; reconnecting";
         return ayn::rsinput::StartupResult::kFailed;
       }
@@ -513,6 +528,10 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
     const ayn::rsinput::UartReadDisposition disposition =
         ayn::rsinput::ClassifyUartRead(received, read_error);
     if (disposition == ayn::rsinput::UartReadDisposition::kRetry) {
+      if (status_stream_expired(false)) {
+        LOG(WARNING) << "RSInput UART status stream idle; reconnecting";
+        return ayn::rsinput::StartupResult::kFailed;
+      }
       if (g_stop_requested != 0) {
         return ayn::rsinput::StartupResult::kStopped;
       }
@@ -527,9 +546,15 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
       LOG(ERROR) << "RSInput UART closed";
       return ayn::rsinput::StartupResult::kFailed;
     }
-    stream_watchdog.ObserveData();
+    const size_t accepted_before = parser.stats().accepted_status_frames;
     parser.Feed(buffer.data(), static_cast<size_t>(received), EmitStatus,
                 &emitter);
+    const bool status_observed =
+        parser.stats().accepted_status_frames != accepted_before;
+    if (status_stream_expired(status_observed)) {
+      LOG(WARNING) << "RSInput UART status stream idle; reconnecting";
+      return ayn::rsinput::StartupResult::kFailed;
+    }
   }
   return g_stop_requested != 0 ? ayn::rsinput::StartupResult::kStopped
                                : ayn::rsinput::StartupResult::kFailed;
