@@ -12,6 +12,20 @@
 
 namespace ayn::rsinput {
 
+bool RuntimeStreamWatchdog::ObserveTimeout(uint32_t elapsed_ms) {
+  if (idle_timeout_ms_ == 0 ||
+      elapsed_ms >= idle_timeout_ms_ - idle_elapsed_ms_) {
+    idle_elapsed_ms_ = idle_timeout_ms_;
+    return true;
+  }
+  idle_elapsed_ms_ += elapsed_ms;
+  return false;
+}
+
+void RuntimeStreamWatchdog::ObserveData() {
+  idle_elapsed_ms_ = 0;
+}
+
 StartupResult OpenUartUnlessStopped(StopRequested stop_requested,
                                     void* stop_context,
                                     UartOpener open_uart,

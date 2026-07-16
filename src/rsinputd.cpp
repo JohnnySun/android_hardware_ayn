@@ -45,6 +45,7 @@ constexpr useconds_t kUartByteIntervalUs = 100;
 constexpr uint32_t kInitialRetryDelayMs = 250;
 constexpr uint32_t kMaxRetryDelayMs = 5000;
 constexpr uint32_t kStopCheckIntervalMs = 50;
+constexpr uint32_t kRuntimeStatusIdleTimeoutMs = 1000;
 constexpr char kControllerServiceName[] =
     "com.ayn.controller.IOdinController/default";
 
@@ -477,6 +478,8 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
     return ayn::rsinput::StartupResult::kFailed;
   }
   EventEmitter emitter{uinput_fd, runtime->profile_service};
+  ayn::rsinput::RuntimeStreamWatchdog stream_watchdog(
+      kRuntimeStatusIdleTimeoutMs);
   std::array<uint8_t, 256> buffer{};
 
   while (g_stop_requested == 0 && !emitter.failed) {
@@ -491,6 +494,10 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
       return ayn::rsinput::StartupResult::kFailed;
     }
     if (poll_result == 0) {
+      if (stream_watchdog.ObserveTimeout(kStopCheckIntervalMs)) {
+        LOG(WARNING) << "RSInput UART status stream idle; reconnecting";
+        return ayn::rsinput::StartupResult::kFailed;
+      }
       continue;
     }
     if ((uart_poll.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0) {
@@ -520,6 +527,7 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
       LOG(ERROR) << "RSInput UART closed";
       return ayn::rsinput::StartupResult::kFailed;
     }
+    stream_watchdog.ObserveData();
     parser.Feed(buffer.data(), static_cast<size_t>(received), EmitStatus,
                 &emitter);
   }

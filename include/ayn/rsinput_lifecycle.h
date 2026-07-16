@@ -88,6 +88,19 @@ struct RetryPolicy {
   uint32_t max_delay_ms;
 };
 
+class RuntimeStreamWatchdog {
+ public:
+  explicit RuntimeStreamWatchdog(uint32_t idle_timeout_ms)
+      : idle_timeout_ms_(idle_timeout_ms) {}
+
+  bool ObserveTimeout(uint32_t elapsed_ms);
+  void ObserveData();
+
+ private:
+  uint32_t idle_timeout_ms_;
+  uint32_t idle_elapsed_ms_ = 0;
+};
+
 StartupResult OpenUartUnlessStopped(StopRequested stop_requested,
                                     void* stop_context,
                                     UartOpener open_uart,
