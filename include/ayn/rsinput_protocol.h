@@ -13,8 +13,10 @@ constexpr uint8_t kCmdStatus = 0x02;
 constexpr std::array<uint8_t, 6> kQ9RawPoll = {0x2e, 0x01, 0x02,
                                                0x0a, 0x01, 0x00};
 constexpr std::array<uint8_t, 1> kQ9StartPayload = {0x06};
+// Keep the stock-compatible report period and enabled-input mask. The smaller
+// 0x05/0x01 values produce sequenced status frames with frozen payload data.
 constexpr std::array<uint8_t, 10> kSetParametersPayload = {
-    0x05, 0x01, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x01,
+    0x05, 0x01, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x07,
 };
 
 enum class HandshakeState {
