@@ -19,6 +19,8 @@ BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/rsinputd-host-test.XXXXXX")
 trap 'rm -rf "$BUILD_DIR"' EXIT INT TERM
 
 echo "CXX=$CXX"
+
+python3 "$ROOT/tests/aidl_contract_test.py"
 "$CXX" \
   -std=c++17 \
   -Wall -Wextra -Werror -pedantic \
