@@ -33,10 +33,15 @@ enum class PerformanceResult {
 };
 
 struct ControlPolicy {
-  static constexpr ControlPolicy ReadOnly() { return {false}; }
-  static constexpr ControlPolicy StockNormalOnly() { return {true}; }
+  static constexpr ControlPolicy ReadOnly() { return {false, false, false}; }
+  static constexpr ControlPolicy StockNormalOnly() {
+    return {true, false, false};
+  }
+  static constexpr ControlPolicy AllStockModes() { return {true, true, true}; }
 
   bool stock_normal_write_enabled;
+  bool performance_write_enabled;
+  bool high_write_enabled;
 };
 
 struct DeviceIdentity {

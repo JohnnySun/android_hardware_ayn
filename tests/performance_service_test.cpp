@@ -40,6 +40,14 @@ const std::array<uint64_t, kNodeCount> kStockNormal = {
     902400, 2016000, 1651200, 2803200, 1843200,
     3187200, 401000000, 680000000, 4224000, 4224000,
 };
+const std::array<uint64_t, kNodeCount> kPerformance = {
+    1228800, 2016000, 2054400, 2803200, 2476800,
+    3187200, 680000000, 680000000, 4224000, 4224000,
+};
+const std::array<uint64_t, kNodeCount> kHigh = {
+    2016000, 2016000, 2803200, 2803200, 3187200,
+    3187200, 680000000, 680000000, 4224000, 4224000,
+};
 
 struct Harness {
   std::map<std::string, std::string> files;
@@ -47,6 +55,7 @@ struct Harness {
   size_t write_count = 0;
   size_t fail_write_at = 0;
   size_t fail_write_after_mutation_at = 0;
+  size_t mismatch_after_write_at = 0;
   bool transaction_failed = false;
   size_t fail_rollback_write_at = 0;
 
@@ -86,6 +95,9 @@ bool WriteFile(void* context, const std::string& path,
   if (harness->fail_write_after_mutation_at == harness->write_count) {
     harness->transaction_failed = true;
     return false;
+  }
+  if (harness->mismatch_after_write_at == harness->write_count) {
+    harness->files[path] = std::to_string(std::stoull(value) + 1) + "\n";
   }
   return true;
 }
@@ -217,6 +229,92 @@ void StockNormalTransitionCanRestoreStartupBaseline() {
   CHECK(service.GetStatus().active_mode == PerformanceMode::kSystemManaged);
 }
 
+void AllStockModesWriteExactTargetsAndRestoreStartupBaseline() {
+  Harness harness;
+  PerformanceService service =
+      Service(&harness, ControlPolicy::AllStockModes());
+  CHECK(service.Initialize().result == PerformanceResult::kOk);
+
+  const std::array<std::pair<PerformanceMode,
+                             std::array<uint64_t, kNodeCount>>, 4>
+      transitions = {{
+          {PerformanceMode::kStockNormal, kStockNormal},
+          {PerformanceMode::kPerformance, kPerformance},
+          {PerformanceMode::kHigh, kHigh},
+          {PerformanceMode::kStockNormal, kStockNormal},
+      }};
+  for (const auto& [mode, expected] : transitions) {
+    CHECK(service.SetMode(mode).result == PerformanceResult::kOk);
+    CHECK(service.GetStatus().active_mode == mode);
+    CHECK(Values(harness) == expected);
+  }
+
+  CHECK(service.SetMode(PerformanceMode::kSystemManaged).result ==
+        PerformanceResult::kOk);
+  CHECK(service.GetStatus().active_mode ==
+        PerformanceMode::kSystemManaged);
+  CHECK(Values(harness) == kBaseline);
+}
+
+void NewModesRollBackEveryFailedNode() {
+  for (PerformanceMode mode : {PerformanceMode::kPerformance,
+                               PerformanceMode::kHigh}) {
+    for (size_t index = 0; index < kNodeCount; ++index) {
+      Harness rejected_write;
+      PerformanceService rejected_service =
+          Service(&rejected_write, ControlPolicy::AllStockModes());
+      CHECK(rejected_service.Initialize().result == PerformanceResult::kOk);
+      rejected_write.fail_write_at = index + 1;
+      CHECK(rejected_service.SetMode(mode).result ==
+            PerformanceResult::kWriteFailed);
+      CHECK(Values(rejected_write) == kBaseline);
+
+      Harness mutated_write;
+      PerformanceService mutated_service =
+          Service(&mutated_write, ControlPolicy::AllStockModes());
+      CHECK(mutated_service.Initialize().result == PerformanceResult::kOk);
+      mutated_write.fail_write_after_mutation_at = index + 1;
+      CHECK(mutated_service.SetMode(mode).result ==
+            PerformanceResult::kWriteFailed);
+      CHECK(Values(mutated_write) == kBaseline);
+
+      Harness mismatched_readback;
+      PerformanceService mismatched_service =
+          Service(&mismatched_readback, ControlPolicy::AllStockModes());
+      CHECK(mismatched_service.Initialize().result == PerformanceResult::kOk);
+      mismatched_readback.mismatch_after_write_at = index + 1;
+      CHECK(mismatched_service.SetMode(mode).result ==
+            PerformanceResult::kReadbackFailed);
+      CHECK(Values(mismatched_readback) == kBaseline);
+    }
+  }
+}
+
+void NewModesHonorRollbackFailureLatch() {
+  for (PerformanceMode mode : {PerformanceMode::kPerformance,
+                               PerformanceMode::kHigh}) {
+    Harness harness;
+    PerformanceService service =
+        Service(&harness, ControlPolicy::AllStockModes());
+    CHECK(service.Initialize().result == PerformanceResult::kOk);
+    harness.fail_write_at = 4;
+    harness.fail_rollback_write_at = 5;
+    CHECK(service.SetMode(mode).result ==
+          PerformanceResult::kRollbackFailed);
+
+    const size_t latched_writes = harness.write_count;
+    CHECK(service.SetMode(mode).result ==
+          PerformanceResult::kRollbackFailed);
+    CHECK(harness.write_count == latched_writes);
+
+    harness.fail_write_at = 0;
+    harness.fail_rollback_write_at = 0;
+    CHECK(service.SetMode(PerformanceMode::kSystemManaged).result ==
+          PerformanceResult::kOk);
+    CHECK(Values(harness) == kBaseline);
+  }
+}
+
 void FailedNormalTransitionRollsBackOrLocksFurtherWrites() {
   Harness rollback;
   PerformanceService rollback_service =
@@ -321,6 +419,9 @@ int main() {
     ProductionReadOnlyPolicyNeedsNoWriter();
     HighAndPerformanceRemainUnavailableUnderStockNormalPolicy();
     StockNormalTransitionCanRestoreStartupBaseline();
+    AllStockModesWriteExactTargetsAndRestoreStartupBaseline();
+    NewModesRollBackEveryFailedNode();
+    NewModesHonorRollbackFailureLatch();
     FailedNormalTransitionRollsBackOrLocksFurtherWrites();
     WriterFailureAfterMutationRollsBackTheAttemptedNode();
     RollbackLatchRequiresACompletePointByPointBaselineRestore();

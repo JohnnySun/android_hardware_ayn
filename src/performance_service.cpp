@@ -17,6 +17,16 @@ constexpr std::array<uint64_t, kPerformanceNodeCount> kStockNormalValues = {
     3187200, 401000000, 680000000, 4224000, 4224000,
 };
 
+constexpr std::array<uint64_t, kPerformanceNodeCount> kPerformanceValues = {
+    1228800, 2016000, 2054400, 2803200, 2476800,
+    3187200, 680000000, 680000000, 4224000, 4224000,
+};
+
+constexpr std::array<uint64_t, kPerformanceNodeCount> kHighValues = {
+    2016000, 2016000, 2803200, 2803200, 3187200,
+    3187200, 680000000, 680000000, 4224000, 4224000,
+};
+
 bool IsSupportedIdentity(const DeviceIdentity& identity) {
   return identity.product_device == "odin2_mini" &&
          identity.product_name == "lineage_odin2_mini" &&
@@ -177,8 +187,9 @@ PerformanceService::Snapshot PerformanceService::TargetForModeLocked(
     case PerformanceMode::kStockNormal:
       return kStockNormalValues;
     case PerformanceMode::kPerformance:
+      return kPerformanceValues;
     case PerformanceMode::kHigh:
-      return baseline_;
+      return kHighValues;
   }
   return baseline_;
 }
@@ -263,10 +274,15 @@ PerformanceResponse PerformanceService::SetMode(PerformanceMode mode) {
   if (!IsSupportedMode(mode)) {
     return ResponseLocked(PerformanceResult::kInvalidMode, mode);
   }
-  if (mode == PerformanceMode::kPerformance ||
-      mode == PerformanceMode::kHigh ||
+  const bool write_enabled =
+      mode == PerformanceMode::kSystemManaged ||
       (mode == PerformanceMode::kStockNormal &&
-       (!policy_.stock_normal_write_enabled || write_file_ == nullptr))) {
+       policy_.stock_normal_write_enabled) ||
+      (mode == PerformanceMode::kPerformance &&
+       policy_.performance_write_enabled) ||
+      (mode == PerformanceMode::kHigh && policy_.high_write_enabled);
+  if (!write_enabled ||
+      (mode != PerformanceMode::kSystemManaged && write_file_ == nullptr)) {
     return ResponseLocked(PerformanceResult::kModeUnavailable, mode);
   }
   if (mode == active_mode_) {
