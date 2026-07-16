@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ayn/controller_profile.h"
+#include "ayn/controller_profile_adapter.h"
 #include "ayn/rsinput_mapping.h"
 #include "ayn/rsinput_lifecycle.h"
 #include "ayn/rsinput_parser.h"
 
+#include <aidl/com/ayn/controller/BnOdinController.h>
+#include <aidl/com/ayn/controller/ControllerProfileResponse.h>
 #include <android-base/logging.h>
 #include <android-base/properties.h>
+#include <android/binder_manager.h>
+#include <android/binder_process.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <linux/uinput.h>
@@ -24,6 +30,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 
 namespace {
@@ -37,8 +44,58 @@ constexpr useconds_t kUartByteIntervalUs = 100;
 constexpr uint32_t kInitialRetryDelayMs = 250;
 constexpr uint32_t kMaxRetryDelayMs = 5000;
 constexpr uint32_t kStopCheckIntervalMs = 50;
+constexpr char kControllerServiceName[] =
+    "com.ayn.controller.IOdinController/default";
 
 volatile sig_atomic_t g_stop_requested = 0;
+
+struct RuntimeContext {
+  std::string product_device;
+  ayn::rsinput::ControllerProfileService* profile_service = nullptr;
+};
+
+int32_t AidlProfile(ayn::rsinput::ControllerProfile profile) {
+  return static_cast<int32_t>(profile);
+}
+
+int32_t AidlProfileResult(ayn::rsinput::ControllerProfileResult result) {
+  return static_cast<int32_t>(result);
+}
+
+::aidl::com::ayn::controller::ControllerProfileResponse ToAidlResponse(
+    const ayn::rsinput::ControllerProfileResponse& response) {
+  ::aidl::com::ayn::controller::ControllerProfileResponse aidl_response;
+  aidl_response.result = AidlProfileResult(response.result);
+  aidl_response.requestedProfile = AidlProfile(response.requested_profile);
+  aidl_response.activeProfile = AidlProfile(response.active_profile);
+  return aidl_response;
+}
+
+class OdinControllerBinder final
+    : public ::aidl::com::ayn::controller::BnOdinController {
+ public:
+  explicit OdinControllerBinder(ayn::rsinput::ControllerProfileService* core)
+      : core_(core) {}
+
+  ::ndk::ScopedAStatus getProfile(
+      ::aidl::com::ayn::controller::ControllerProfileResponse* response)
+      override {
+    *response = ToAidlResponse(core_->GetProfile());
+    return ::ndk::ScopedAStatus::ok();
+  }
+
+  ::ndk::ScopedAStatus setProfile(
+      int32_t profile,
+      ::aidl::com::ayn::controller::ControllerProfileResponse* response)
+      override {
+    *response = ToAidlResponse(core_->SetProfile(
+        static_cast<ayn::rsinput::ControllerProfile>(profile)));
+    return ::ndk::ScopedAStatus::ok();
+  }
+
+ private:
+  ayn::rsinput::ControllerProfileService* const core_;
+};
 
 void RequestStop(int) {
   g_stop_requested = 1;
@@ -385,6 +442,7 @@ const char* HandshakeFailureName(ayn::rsinput::HandshakeFailure failure) {
 
 struct EventEmitter {
   int uinput_fd;
+  ayn::rsinput::ControllerProfileService* profile_service;
   bool failed = false;
 };
 
@@ -393,7 +451,7 @@ void EmitStatus(void* context, const ayn::rsinput::Status& status) {
   if (emitter->failed) {
     return;
   }
-  const auto events = ayn::rsinput::MapStatusToEvents(status);
+  const auto events = emitter->profile_service->MapStatusToEvents(status);
   for (const ayn::rsinput::InputEvent& event : events) {
     input_event linux_event{};
     linux_event.type = event.type;
@@ -406,10 +464,14 @@ void EmitStatus(void* context, const ayn::rsinput::Status& status) {
   }
 }
 
-ayn::rsinput::StartupResult ForwardStatusFrames(void*, int uart_fd,
+ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
                                                 int uinput_fd) {
   ayn::rsinput::Parser parser;
-  EventEmitter emitter{uinput_fd};
+  auto* runtime = static_cast<RuntimeContext*>(context);
+  if (runtime == nullptr || runtime->profile_service == nullptr) {
+    return ayn::rsinput::StartupResult::kFailed;
+  }
+  EventEmitter emitter{uinput_fd, runtime->profile_service};
   std::array<uint8_t, 256> buffer{};
 
   while (g_stop_requested == 0 && !emitter.failed) {
@@ -499,20 +561,49 @@ void WaitBeforeRetry(void*, uint32_t delay_ms) {
   }
 }
 
-int RunSupportedDevice(void*) {
+int RunSupportedDevice(void* context) {
+  auto* runtime = static_cast<RuntimeContext*>(context);
+  if (runtime == nullptr ||
+      !ayn::rsinput::IsSupportedControllerDevice(runtime->product_device)) {
+    return EXIT_FAILURE;
+  }
   if (!InstallStopHandlers()) {
     return EXIT_FAILURE;
   }
+
+  auto profile_service = std::make_unique<ayn::rsinput::ControllerProfileService>(
+      runtime->product_device, ayn::rsinput::ProductionControllerProfileStore());
+  const ayn::rsinput::ControllerProfileResponse startup =
+      profile_service->Initialize();
+  if (startup.result != ayn::rsinput::ControllerProfileResult::kOk) {
+    LOG(ERROR) << "cannot initialize controller profile; result="
+               << AidlProfileResult(startup.result);
+    return EXIT_FAILURE;
+  }
+  auto binder =
+      ::ndk::SharedRefBase::make<OdinControllerBinder>(profile_service.get());
+  ABinderProcess_setThreadPoolMaxThreadCount(1);
+  ABinderProcess_startThreadPool();
+  const binder_status_t registration = AServiceManager_addService(
+      binder->asBinder().get(), kControllerServiceName);
+  if (registration != STATUS_OK) {
+    LOG(ERROR) << "failed to register " << kControllerServiceName
+               << "; status=" << registration;
+    return EXIT_FAILURE;
+  }
+  LOG(INFO) << "registered " << kControllerServiceName;
+  runtime->profile_service = profile_service.get();
 
   const ayn::rsinput::LifecycleCallbacks callbacks = {
       StopWasRequested,       LeaveRuntimeMcuPowerUnchanged,
       LeaveRuntimeMcuPowerUnchanged, SkipRuntimeMcuPowerSettle,
       OpenRuntimeUart,        OpenRuntimeUinput,
       CloseRuntimeUart,       CloseRuntimeUinput,   InitializeRuntimeSession,
-      ForwardStatusFrames,    WaitBeforeRetry,      nullptr,
+      ForwardStatusFrames,    WaitBeforeRetry,      runtime,
   };
   const ayn::rsinput::StartupResult result = ayn::rsinput::RunReconnectLoop(
       callbacks, {kInitialRetryDelayMs, kMaxRetryDelayMs});
+  runtime->profile_service = nullptr;
   return result == ayn::rsinput::StartupResult::kStopped ? EXIT_SUCCESS
                                                          : EXIT_FAILURE;
 }
@@ -520,11 +611,13 @@ int RunSupportedDevice(void*) {
 }  // namespace
 
 int main() {
-  const std::string product_device =
-      android::base::GetProperty("ro.product.device", "");
+  RuntimeContext runtime = {
+      android::base::GetProperty("ro.product.device", ""),
+      nullptr,
+  };
   const int result = ayn::rsinput::RunIfSupportedDevice(
-      product_device, RunSupportedDevice, nullptr);
-  if (!ayn::rsinput::IsSupportedDevice(product_device)) {
+      runtime.product_device, RunSupportedDevice, &runtime);
+  if (!ayn::rsinput::IsSupportedDevice(runtime.product_device)) {
     LOG(ERROR) << "rsinputd is disabled for this product device";
   }
   return result;

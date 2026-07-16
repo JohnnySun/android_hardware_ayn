@@ -19,6 +19,13 @@ constexpr std::array<uint16_t, 16> kButtonCodes = {
     kBtnThumbL,   kBtnThumbR,   kBtnMode,     kBtnBack,
 };
 
+constexpr std::array<uint16_t, 4> kFlippedFaceButtonCodes = {
+    kBtnNorth,
+    kBtnWest,
+    kBtnSouth,
+    kBtnEast,
+};
+
 int32_t NegateAxis(int16_t raw) {
   return -static_cast<int32_t>(raw);
 }
@@ -28,6 +35,11 @@ int32_t TransformTrigger(uint16_t raw) {
 }
 
 }  // namespace
+
+bool IsValidControllerProfile(ControllerProfile profile) {
+  return profile == ControllerProfile::kStandard ||
+         profile == ControllerProfile::kFlippedFace;
+}
 
 bool IsSupportedDevice(const std::string& product_device) {
   return product_device == "odin2_mini";
@@ -43,9 +55,18 @@ int RunIfSupportedDevice(const std::string& product_device,
 
 std::array<InputEvent, kStatusEventCount> MapStatusToEvents(
     const Status& status) {
+  return MapStatusToEvents(status, ControllerProfile::kStandard);
+}
+
+std::array<InputEvent, kStatusEventCount> MapStatusToEvents(
+    const Status& status, ControllerProfile profile) {
   std::array<InputEvent, kStatusEventCount> events{};
   for (size_t bit = 0; bit < kButtonCodes.size(); ++bit) {
-    events[bit] = {kEventTypeKey, kButtonCodes[bit],
+    uint16_t code = kButtonCodes[bit];
+    if (profile == ControllerProfile::kFlippedFace && bit >= 4 && bit < 8) {
+      code = kFlippedFaceButtonCodes[bit - 4];
+    }
+    events[bit] = {kEventTypeKey, code,
                    static_cast<int32_t>((status.buttons >> bit) & 1u)};
   }
 

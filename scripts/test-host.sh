@@ -46,6 +46,19 @@ echo "CXX=$CXX"
   -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I"$ROOT/include" \
+  "$ROOT/src/rsinput_parser.cpp" \
+  "$ROOT/src/rsinput_mapping.cpp" \
+  "$ROOT/src/controller_profile.cpp" \
+  "$ROOT/tests/controller_profile_test.cpp" \
+  -pthread \
+  -o "$BUILD_DIR/controller_profile_test"
+"$BUILD_DIR/controller_profile_test"
+
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
   "$ROOT/src/rsinput_poll.cpp" \
   "$ROOT/tests/rsinput_poll_test.cpp" \
   -o "$BUILD_DIR/rsinput_poll_test"
@@ -180,6 +193,49 @@ fi
 if grep -Eq '/dev/tty|/dev/rscom|/sys/|mcupower|gpio|fan' \
      "$ROOT/tools/rsinput_selftest.cpp"; then
   echo "error: RSInput selftest must not touch UART, MCU, sysfs, or fan controls" >&2
+  exit 1
+fi
+
+controller_module="$(sed -n \
+  '/^[[:space:]]*cc_binary[[:space:]]*{/,/^}/p' "$ROOT/Android.bp" |
+  sed -n '/name: "rsinputd"/,/^}/p')"
+if ! printf '%s\n' "$controller_module" | grep -qx '    name: "rsinputd",' ||
+   ! printf '%s\n' "$controller_module" | grep -qx \
+      '        "com.ayn.controller-ndk",'; then
+  echo "error: rsinputd must link the controller Binder interface" >&2
+  exit 1
+fi
+
+if ! grep -q 'name: "com.ayn.controller"' "$ROOT/Android.bp" ||
+   ! grep -qx 'interface IOdinController {' \
+      "$ROOT/aidl/com/ayn/controller/IOdinController.aidl" ||
+   ! grep -qx '    ControllerProfileResponse getProfile();' \
+      "$ROOT/aidl/com/ayn/controller/IOdinController.aidl" ||
+   ! grep -qx '    ControllerProfileResponse setProfile(int profile);' \
+      "$ROOT/aidl/com/ayn/controller/IOdinController.aidl" ||
+   ! grep -qx '    const int PROFILE_STANDARD = 0;' \
+      "$ROOT/aidl/com/ayn/controller/ControllerProfileResponse.aidl" ||
+   ! grep -qx '    const int PROFILE_FLIPPED_FACE = 1;' \
+      "$ROOT/aidl/com/ayn/controller/ControllerProfileResponse.aidl"; then
+  echo "error: controller profile AIDL contract is incomplete" >&2
+  exit 1
+fi
+
+if ! grep -q 'com.ayn.controller.IOdinController/default' \
+     "$ROOT/src/rsinputd.cpp" ||
+   ! grep -q 'AServiceManager_addService' "$ROOT/src/rsinputd.cpp" ||
+   ! grep -q 'persist.sys.ayn.controller.profile' \
+     "$ROOT/include/ayn/controller_profile.h"; then
+  echo "error: rsinputd controller Binder or persistence wiring is incomplete" >&2
+  exit 1
+fi
+
+if grep -Eq '/dev/(tty|uinput|rscom)|/sys/|gpio|mcu|WritePosixFile' \
+     "$ROOT/include/ayn/controller_profile.h" \
+     "$ROOT/include/ayn/controller_profile_adapter.h" \
+     "$ROOT/src/controller_profile.cpp" \
+     "$ROOT/src/controller_profile_adapter.cpp"; then
+  echo "error: controller profile backend must not add hardware control I/O" >&2
   exit 1
 fi
 

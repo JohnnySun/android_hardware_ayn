@@ -47,6 +47,11 @@ constexpr int32_t kTriggerAxisMin = 0;
 constexpr int32_t kTriggerAxisMax = 0x610;
 constexpr int32_t kTriggerAxisFlat = 30;
 
+enum class ControllerProfile : int32_t {
+  kStandard = 0,
+  kFlippedFace = 1,
+};
+
 struct InputEvent {
   uint16_t type;
   uint16_t code;
@@ -66,5 +71,8 @@ int RunIfSupportedDevice(const std::string& product_device,
                          SupportedDeviceRunner runner, void* context);
 std::array<InputEvent, kStatusEventCount> MapStatusToEvents(
     const Status& status);
+std::array<InputEvent, kStatusEventCount> MapStatusToEvents(
+    const Status& status, ControllerProfile profile);
+bool IsValidControllerProfile(ControllerProfile profile);
 
 }  // namespace ayn::rsinput
