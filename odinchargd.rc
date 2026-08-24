@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+
+service odinchargd /system/bin/odinchargd
+    class late_start
+    user system
+    group system

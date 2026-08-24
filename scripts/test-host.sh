@@ -150,6 +150,17 @@ python3 "$ROOT/tests/aidl_contract_test.py"
   -Wall -Wextra -Werror -pedantic \
   -fsanitize=address,undefined -fno-omit-frame-pointer \
   -I"$ROOT/include" \
+  "$ROOT/src/charge_policy.cpp" \
+  "$ROOT/src/charge_lifecycle.cpp" \
+  "$ROOT/tests/charge_lifecycle_test.cpp" \
+  -o "$BUILD_DIR/charge_lifecycle_test"
+"$BUILD_DIR/charge_lifecycle_test"
+
+"$CXX" \
+  -std=c++17 \
+  -Wall -Wextra -Werror -pedantic \
+  -fsanitize=address,undefined -fno-omit-frame-pointer \
+  -I"$ROOT/include" \
   "$ROOT/src/lights_policy.cpp" \
   "$ROOT/tests/lights_policy_test.cpp" \
   -o "$BUILD_DIR/lights_policy_test"
