@@ -15,56 +15,44 @@ const SysfsPaths& StockPaths() {
   return paths;
 }
 
-int ScaleByAlpha(int channel, int alpha) {
-  // An alpha of zero from a caller that also sent colour means "no opacity
-  // stated", which the framework already treats as fully opaque.
-  const int effective_alpha = alpha == 0 ? kChannelMaximum : alpha;
-  return (channel * effective_alpha) / kChannelMaximum;
-}
-
-int Bound(int channel) {
-  return std::clamp(channel, 0, std::min(kChannelMaximum, kHardChannelCeiling));
+int ScaleChannel(int channel, int cap, int peak) {
+  if (channel <= 0) {
+    return 0;
+  }
+  const int scaled = (channel * cap) / peak;
+  // A channel that carried colour must not disappear, or a dim red becomes an
+  // unlit LED rather than a dimmer red.
+  return std::max(scaled, 1);
 }
 
 }  // namespace
 
-bool DrivesIndicator(LightType type) {
-  return type == LightType::kBattery || type == LightType::kNotifications ||
-         type == LightType::kAttention;
+bool IsValidCap(int cap) { return cap >= 1 && cap <= kChannelMaximum; }
+
+bool AreValidChannels(const Channels& channels) {
+  const auto in_range = [](int value) {
+    return value >= 0 && value <= kChannelMaximum;
+  };
+  return in_range(channels.red) && in_range(channels.green) &&
+         in_range(channels.blue);
 }
 
-bool IsKnownLightId(int id) {
-  return id >= static_cast<int>(LightType::kBacklight) &&
-         id <= static_cast<int>(LightType::kWifi);
-}
-
-ChannelPlan Plan(LightType type, unsigned int argb, FlashMode flash_mode,
-                 int on_ms, int off_ms) {
-  if (!DrivesIndicator(type)) {
-    return {false, 0, 0, 0, false, 0, 0};
+ClampDecision Clamp(const Channels& observed, int cap) {
+  if (!IsValidCap(cap) || !AreValidChannels(observed)) {
+    return {false, false, {0, 0, 0}};
   }
 
-  const int alpha = static_cast<int>((argb >> 24) & 0xFF);
-  const int red = static_cast<int>((argb >> 16) & 0xFF);
-  const int green = static_cast<int>((argb >> 8) & 0xFF);
-  const int blue = static_cast<int>(argb & 0xFF);
+  const int peak = std::max({observed.red, observed.green, observed.blue});
+  if (peak <= cap) {
+    return {true, false, observed};
+  }
 
-  const int planned_red = Bound(ScaleByAlpha(red, alpha));
-  const int planned_green = Bound(ScaleByAlpha(green, alpha));
-  const int planned_blue = Bound(ScaleByAlpha(blue, alpha));
-
-  // Blinking with no timings, or with the light already off, is a steady write.
-  const bool lit = planned_red > 0 || planned_green > 0 || planned_blue > 0;
-  const bool blink =
-      flash_mode == FlashMode::kTimed && lit && on_ms > 0 && off_ms > 0;
-
-  return {true,
-          planned_red,
-          planned_green,
-          planned_blue,
-          blink,
-          blink ? on_ms : 0,
-          blink ? off_ms : 0};
+  const Channels clamped = {
+      ScaleChannel(observed.red, cap, peak),
+      ScaleChannel(observed.green, cap, peak),
+      ScaleChannel(observed.blue, cap, peak),
+  };
+  return {true, true, clamped};
 }
 
 const SysfsPaths& StockSysfsPaths() { return StockPaths(); }

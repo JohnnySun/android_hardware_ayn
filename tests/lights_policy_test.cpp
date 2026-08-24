@@ -2,6 +2,7 @@
 
 #include "ayn/lights_policy.h"
 
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -20,101 +21,80 @@ void Check(bool condition, const char* expression, const char* file, int line) {
 }
 
 using ayn::lights::AreExpectedSysfsPaths;
-using ayn::lights::ChannelPlan;
-using ayn::lights::DrivesIndicator;
-using ayn::lights::FlashMode;
-using ayn::lights::IsKnownLightId;
+using ayn::lights::Channels;
+using ayn::lights::Clamp;
+using ayn::lights::ClampDecision;
 using ayn::lights::IsSupportedDevice;
-using ayn::lights::kHardChannelCeiling;
-using ayn::lights::LightType;
-using ayn::lights::Plan;
+using ayn::lights::IsValidCap;
+using ayn::lights::kChannelMaximum;
+using ayn::lights::kDefaultChannelCap;
 using ayn::lights::StockSysfsPaths;
 using ayn::lights::SysfsPaths;
 
-ChannelPlan Steady(LightType type, unsigned int argb) {
-  return Plan(type, argb, FlashMode::kNone, 0, 0);
+void FullWhiteIsBroughtDownToTheCap() {
+  // The observed failure: a notification drove every channel to 255.
+  const ClampDecision decision = Clamp({255, 255, 255}, kDefaultChannelCap);
+  CHECK(decision.valid);
+  CHECK(decision.write_required);
+  CHECK((decision.channels == Channels{1, 1, 1}));
 }
 
-void DeclaredButUndrivenLightsWriteNothing() {
-  // The stock HAL declares these and has no code path to any of them. A
-  // replacement that started driving them would be a behaviour change, and for
-  // the backlight it would be a dangerous one.
-  for (const LightType type :
-       {LightType::kBacklight, LightType::kKeyboard, LightType::kButtons,
-        LightType::kBluetooth, LightType::kWifi}) {
-    const ChannelPlan plan = Steady(type, 0xFFFFFFFFu);
-    CHECK(!plan.handled);
-    CHECK(plan.red == 0 && plan.green == 0 && plan.blue == 0);
-    CHECK(!DrivesIndicator(type));
-  }
+void AlreadyDimLeavesTheNodesAlone() {
+  // Without this the daemon would answer its own writes forever.
+  const ClampDecision decision = Clamp({1, 1, 1}, kDefaultChannelCap);
+  CHECK(decision.valid);
+  CHECK(!decision.write_required);
+  CHECK((decision.channels == Channels{1, 1, 1}));
 }
 
-void IndicatorLightsAreDriven() {
-  for (const LightType type : {LightType::kBattery, LightType::kNotifications,
-                               LightType::kAttention}) {
-    CHECK(DrivesIndicator(type));
-    CHECK(Steady(type, 0xFF010101u).handled);
-  }
+void AnUnlitLedIsNotTouched() {
+  const ClampDecision decision = Clamp({0, 0, 0}, kDefaultChannelCap);
+  CHECK(decision.valid);
+  CHECK(!decision.write_required);
 }
 
-void ColourReachesTheChannelsUnchanged() {
-  // This is the whole point of replacing the stock HAL: it discarded the
-  // colour and wrote full brightness. A capped colour must survive.
-  const ChannelPlan plan = Steady(LightType::kNotifications, 0xFF010101u);
-  CHECK(plan.red == 1 && plan.green == 1 && plan.blue == 1);
-
-  const ChannelPlan coloured = Steady(LightType::kBattery, 0xFF080402u);
-  CHECK(coloured.red == 8 && coloured.green == 4 && coloured.blue == 2);
+void ClampingIsIdempotent() {
+  const ClampDecision first = Clamp({255, 128, 0}, 8);
+  CHECK(first.write_required);
+  const ClampDecision second = Clamp(first.channels, 8);
+  CHECK(!second.write_required);
+  CHECK(second.channels == first.channels);
 }
 
-void AlphaScalesEachChannel() {
-  const ChannelPlan half = Steady(LightType::kNotifications, 0x80404040u);
-  CHECK(half.red == 32 && half.green == 32 && half.blue == 32);
-
-  // Zero alpha alongside colour means the caller stated no opacity, which the
-  // framework already treats as fully opaque.
-  const ChannelPlan opaque = Steady(LightType::kNotifications, 0x00202020u);
-  CHECK(opaque.red == 32 && opaque.green == 32 && opaque.blue == 32);
+void HueSurvivesTheClamp() {
+  // Clipping each channel independently would turn any bright colour white.
+  const ClampDecision decision = Clamp({255, 128, 0}, 8);
+  CHECK(decision.channels.red == 8);
+  CHECK(decision.channels.green == 4);
+  CHECK(decision.channels.blue == 0);
 }
 
-void TheHardCeilingBoundsAHostileCaller() {
-  const ChannelPlan plan = Steady(LightType::kAttention, 0xFFFFFFFFu);
-  CHECK(plan.red == kHardChannelCeiling);
-  CHECK(plan.green == kHardChannelCeiling);
-  CHECK(plan.blue == kHardChannelCeiling);
+void ALitChannelNeverRoundsAwayToOff() {
+  // Battery-low red is 0x08,0,0. Scaled to a cap of one it must stay red.
+  const ClampDecision decision = Clamp({8, 0, 0}, kDefaultChannelCap);
+  CHECK(decision.write_required);
+  CHECK((decision.channels == Channels{1, 0, 0}));
+
+  const ClampDecision faint = Clamp({255, 3, 0}, 1);
+  CHECK(faint.channels.red == 1);
+  CHECK(faint.channels.green == 1);
+  CHECK(faint.channels.blue == 0);
 }
 
-void BlackTurnsTheLightOffWithoutBlinking() {
-  const ChannelPlan plan = Plan(LightType::kNotifications, 0x00000000u,
-                                FlashMode::kTimed, 500, 500);
-  CHECK(plan.handled);
-  CHECK(plan.red == 0 && plan.green == 0 && plan.blue == 0);
-  CHECK(!plan.blink);
-  CHECK(plan.delay_on_ms == 0 && plan.delay_off_ms == 0);
+void UntrustworthyInputFailsClosed() {
+  CHECK(!Clamp({256, 0, 0}, 1).valid);
+  CHECK(!Clamp({-1, 0, 0}, 1).valid);
+  CHECK(!Clamp({255, 255, 255}, 0).valid);
+  CHECK(!Clamp({255, 255, 255}, 256).valid);
+  CHECK(!Clamp({255, 255, 255}, 0).write_required);
 }
 
-void BlinkNeedsTimedModeAndBothTimings() {
-  const ChannelPlan timed =
-      Plan(LightType::kNotifications, 0xFF080808u, FlashMode::kTimed, 300, 700);
-  CHECK(timed.blink);
-  CHECK(timed.delay_on_ms == 300 && timed.delay_off_ms == 700);
-
-  CHECK(!Plan(LightType::kNotifications, 0xFF080808u, FlashMode::kTimed, 300, 0)
-             .blink);
-  CHECK(!Plan(LightType::kNotifications, 0xFF080808u, FlashMode::kTimed, 0, 700)
-             .blink);
-  CHECK(!Plan(LightType::kNotifications, 0xFF080808u, FlashMode::kNone, 300, 700)
-             .blink);
-  CHECK(!Plan(LightType::kNotifications, 0xFF080808u, FlashMode::kHardware, 300,
-              700)
-             .blink);
-}
-
-void OnlyTheDeclaredLightIdsExist() {
-  CHECK(IsKnownLightId(0));
-  CHECK(IsKnownLightId(7));
-  CHECK(!IsKnownLightId(-1));
-  CHECK(!IsKnownLightId(8));
+void CapBoundsAreEnforced() {
+  CHECK(IsValidCap(1));
+  CHECK(IsValidCap(kChannelMaximum));
+  CHECK(!IsValidCap(0));
+  CHECK(!IsValidCap(-1));
+  CHECK(!IsValidCap(kChannelMaximum + 1));
 }
 
 void UnknownDeviceAndMovedPathsAreRefused() {
@@ -124,19 +104,23 @@ void UnknownDeviceAndMovedPathsAreRefused() {
   CHECK(AreExpectedSysfsPaths(StockSysfsPaths()));
 
   SysfsPaths moved = StockSysfsPaths();
-  moved.green_brightness = "/data/local/tmp/green";
+  moved.blue_brightness = "/data/local/tmp/blue";
   CHECK(!AreExpectedSysfsPaths(moved));
 }
 
-void NoColourEverExceedsTheCeiling() {
-  for (unsigned int channel = 0; channel <= 255; ++channel) {
-    const unsigned int argb =
-        0xFF000000u | (channel << 16) | (channel << 8) | channel;
-    const ChannelPlan plan = Steady(LightType::kNotifications, argb);
-    CHECK(plan.red <= kHardChannelCeiling);
-    CHECK(plan.green <= kHardChannelCeiling);
-    CHECK(plan.blue <= kHardChannelCeiling);
-    CHECK(plan.red >= 0 && plan.green >= 0 && plan.blue >= 0);
+void NothingEverExceedsTheCap() {
+  for (int red = 0; red <= kChannelMaximum; ++red) {
+    for (int cap = 1; cap <= 16; ++cap) {
+      const ClampDecision decision = Clamp({red, kChannelMaximum - red, 7}, cap);
+      CHECK(decision.valid);
+      CHECK(decision.channels.red <= std::max(cap, red));
+      CHECK(decision.channels.green <= kChannelMaximum);
+      if (decision.write_required) {
+        CHECK(decision.channels.red <= cap);
+        CHECK(decision.channels.green <= cap);
+        CHECK(decision.channels.blue <= cap);
+      }
+    }
   }
 }
 
@@ -144,22 +128,18 @@ void NoColourEverExceedsTheCeiling() {
 
 int main() {
   const std::vector<std::pair<std::string, void (*)()>> tests = {
-      {"declared but undriven lights write nothing",
-       DeclaredButUndrivenLightsWriteNothing},
-      {"indicator lights are driven", IndicatorLightsAreDriven},
-      {"colour reaches the channels unchanged",
-       ColourReachesTheChannelsUnchanged},
-      {"alpha scales each channel", AlphaScalesEachChannel},
-      {"the hard ceiling bounds a hostile caller",
-       TheHardCeilingBoundsAHostileCaller},
-      {"black turns the light off without blinking",
-       BlackTurnsTheLightOffWithoutBlinking},
-      {"blink needs timed mode and both timings",
-       BlinkNeedsTimedModeAndBothTimings},
-      {"only the declared light ids exist", OnlyTheDeclaredLightIdsExist},
+      {"full white is brought down to the cap", FullWhiteIsBroughtDownToTheCap},
+      {"an already dim LED is left alone", AlreadyDimLeavesTheNodesAlone},
+      {"an unlit LED is not touched", AnUnlitLedIsNotTouched},
+      {"clamping is idempotent", ClampingIsIdempotent},
+      {"hue survives the clamp", HueSurvivesTheClamp},
+      {"a lit channel never rounds away to off",
+       ALitChannelNeverRoundsAwayToOff},
+      {"untrustworthy input fails closed", UntrustworthyInputFailsClosed},
+      {"cap bounds are enforced", CapBoundsAreEnforced},
       {"unknown device and moved paths are refused",
        UnknownDeviceAndMovedPathsAreRefused},
-      {"no colour ever exceeds the ceiling", NoColourEverExceedsTheCeiling},
+      {"nothing ever exceeds the cap", NothingEverExceedsTheCap},
   };
 
   size_t passed = 0;
