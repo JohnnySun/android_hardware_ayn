@@ -1,5 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
+on boot
+    # The charger restriction nodes ship as root-owned, so the daemon cannot
+    # reach them without init handing them over first.
+    chown system system /sys/class/qcom-battery/restrict_chg
+    chown system system /sys/class/qcom-battery/restrict_cur
+    chmod 0660 /sys/class/qcom-battery/restrict_chg
+    chmod 0660 /sys/class/qcom-battery/restrict_cur
+
 service odinchargd /system/bin/odinchargd
     class late_start
     user system
