@@ -63,9 +63,9 @@ void ProfileMappingOnlyFlipsFacePairs() {
   status.buttons = 0x00f0;
   const auto standard = service.MapStatusToEvents(status);
   CHECK((standard[4] == InputEvent{ayn::rsinput::kEventTypeKey,
-                                   ayn::rsinput::kBtnWest, 1}));
-  CHECK((standard[5] == InputEvent{ayn::rsinput::kEventTypeKey,
                                    ayn::rsinput::kBtnNorth, 1}));
+  CHECK((standard[5] == InputEvent{ayn::rsinput::kEventTypeKey,
+                                   ayn::rsinput::kBtnWest, 1}));
   CHECK((standard[6] == InputEvent{ayn::rsinput::kEventTypeKey,
                                    ayn::rsinput::kBtnEast, 1}));
   CHECK((standard[7] == InputEvent{ayn::rsinput::kEventTypeKey,
@@ -75,9 +75,9 @@ void ProfileMappingOnlyFlipsFacePairs() {
         ControllerProfileResult::kOk);
   const auto flipped = service.MapStatusToEvents(status);
   CHECK((flipped[4] == InputEvent{ayn::rsinput::kEventTypeKey,
-                                  ayn::rsinput::kBtnNorth, 1}));
-  CHECK((flipped[5] == InputEvent{ayn::rsinput::kEventTypeKey,
                                   ayn::rsinput::kBtnWest, 1}));
+  CHECK((flipped[5] == InputEvent{ayn::rsinput::kEventTypeKey,
+                                  ayn::rsinput::kBtnNorth, 1}));
   CHECK((flipped[6] == InputEvent{ayn::rsinput::kEventTypeKey,
                                   ayn::rsinput::kBtnSouth, 1}));
   CHECK((flipped[7] == InputEvent{ayn::rsinput::kEventTypeKey,
@@ -152,12 +152,12 @@ void MappingAndProfileSwitchingAreThreadSafe() {
   std::thread mapper([&service, &mapper_ok]() {
     for (size_t iteration = 0; iteration < 1000; ++iteration) {
       const auto events = service.MapStatusToEvents(Status{});
-      const bool standard = events[4].code == ayn::rsinput::kBtnWest &&
-                            events[5].code == ayn::rsinput::kBtnNorth &&
+      const bool standard = events[4].code == ayn::rsinput::kBtnNorth &&
+                            events[5].code == ayn::rsinput::kBtnWest &&
                             events[6].code == ayn::rsinput::kBtnEast &&
                             events[7].code == ayn::rsinput::kBtnSouth;
-      const bool flipped = events[4].code == ayn::rsinput::kBtnNorth &&
-                           events[5].code == ayn::rsinput::kBtnWest &&
+      const bool flipped = events[4].code == ayn::rsinput::kBtnWest &&
+                           events[5].code == ayn::rsinput::kBtnNorth &&
                            events[6].code == ayn::rsinput::kBtnSouth &&
                            events[7].code == ayn::rsinput::kBtnEast;
       if (!standard && !flipped) mapper_ok.store(false);

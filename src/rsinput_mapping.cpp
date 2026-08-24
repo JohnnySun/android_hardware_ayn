@@ -14,14 +14,14 @@ namespace {
 
 constexpr std::array<uint16_t, 16> kButtonCodes = {
     kBtnDpadUp,   kBtnDpadDown, kBtnDpadLeft, kBtnDpadRight,
-    kBtnWest,     kBtnNorth,    kBtnEast,     kBtnSouth,
+    kBtnNorth,    kBtnWest,     kBtnEast,     kBtnSouth,
     kBtnTl,       kBtnTr,       kBtnSelect,   kBtnStart,
     kBtnThumbL,   kBtnThumbR,   kBtnMode,     kBtnBack,
 };
 
 constexpr std::array<uint16_t, 4> kFlippedFaceButtonCodes = {
-    kBtnNorth,
     kBtnWest,
+    kBtnNorth,
     kBtnSouth,
     kBtnEast,
 };

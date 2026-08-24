@@ -155,7 +155,7 @@ void StatusBitsMapToTheRequiredLinuxCodes() {
   const std::array<uint16_t, 16> expected_codes = {
       ayn::rsinput::kBtnDpadUp,   ayn::rsinput::kBtnDpadDown,
       ayn::rsinput::kBtnDpadLeft, ayn::rsinput::kBtnDpadRight,
-      ayn::rsinput::kBtnWest,     ayn::rsinput::kBtnNorth,
+      ayn::rsinput::kBtnNorth,    ayn::rsinput::kBtnWest,
       ayn::rsinput::kBtnEast,     ayn::rsinput::kBtnSouth,
       ayn::rsinput::kBtnTl,       ayn::rsinput::kBtnTr,
       ayn::rsinput::kBtnSelect,   ayn::rsinput::kBtnStart,
@@ -174,7 +174,7 @@ void StatusBitsMapToTheRequiredLinuxCodes() {
 
 void FaceButtonBitsMatchThePhysicalOdinLabels() {
   const std::array<uint16_t, 4> expected_codes = {
-      ayn::rsinput::kBtnWest, ayn::rsinput::kBtnNorth,
+      ayn::rsinput::kBtnNorth, ayn::rsinput::kBtnWest,
       ayn::rsinput::kBtnEast, ayn::rsinput::kBtnSouth,
   };
 
