@@ -156,7 +156,9 @@ void WriterRetriesEintrAndCompletesShortWrites() {
   CHECK(harness.readback_calls == 1);
 }
 
-void WriterFailsClosedOnCloseOrReadbackFailure() {
+// A close failure or an unreadable node leaves the outcome unknown, so both
+// stay fail-closed.
+void WriterFailsClosedWhenTheOutcomeIsUnknown() {
   WriterHarness close_failure;
   close_failure.close_fails = true;
   auto close_operations = Operations(&close_failure);
@@ -170,11 +172,20 @@ void WriterFailsClosedOnCloseOrReadbackFailure() {
   CHECK(!ayn::performance::WritePosixFile(
       &read_operations, kExpectedWriterPaths[0], "902400"));
 
+}
+
+// A value that reads back different is a known outcome, not an unknown one:
+// the write landed and something else moved it. On this device that something
+// is the QTI perf stack, which resets the cpufreq limits, and the stock daemon
+// answers by rewriting every second rather than by giving up. Treating it as a
+// failure here made every mode change fail closed on a write that had worked.
+void WriterAcceptsAValueSomethingElseMoved() {
   WriterHarness mismatch;
   mismatch.readback_mismatch = true;
   auto mismatch_operations = Operations(&mismatch);
-  CHECK(!ayn::performance::WritePosixFile(
+  CHECK(ayn::performance::WritePosixFile(
       &mismatch_operations, kExpectedWriterPaths[0], "902400"));
+  CHECK(mismatch.readback_calls == 1);
 }
 
 }  // namespace
@@ -185,7 +196,8 @@ int main() {
     AdapterRejectsInvalidBuffersAndMissingFiles();
     WriterAllowsExactlyTheStockTenPaths();
     WriterRetriesEintrAndCompletesShortWrites();
-    WriterFailsClosedOnCloseOrReadbackFailure();
+    WriterFailsClosedWhenTheOutcomeIsUnknown();
+    WriterAcceptsAValueSomethingElseMoved();
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return 1;

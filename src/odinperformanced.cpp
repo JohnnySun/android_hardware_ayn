@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <chrono>
 #include <thread>
 #include <utility>
 
@@ -61,6 +62,10 @@ class OdinPerformanceBinder final
 
   ayn::performance::PerformanceResponse Initialize() {
     return core_.Initialize();
+  }
+
+  ayn::performance::PerformanceResponse Reassert() {
+    return core_.Reassert();
   }
 
   ayn::performance::PerformanceResponse BeginShutdown() {
@@ -137,6 +142,26 @@ int main() {
       _exit(EXIT_FAILURE);
     }
     _exit(EXIT_SUCCESS);
+  }).detach();
+
+  // The QTI perf stack resets these limits, so a chosen mode has to be held
+  // rather than written once. The stock daemon reasserted every second and
+  // skipped while the screen was off; both are worth keeping, the second
+  // because there is no reason to hold raised minimums against a dark panel.
+  std::thread([service]() mutable {
+    while (true) {
+      std::this_thread::sleep_for(
+          std::chrono::seconds(kReassertIntervalSeconds));
+      if (android::base::GetProperty(kScreenStateProperty, "") ==
+          kScreenOffValue) {
+        continue;
+      }
+      const ayn::performance::PerformanceResponse held = service->Reassert();
+      if (held.result != ayn::performance::PerformanceResult::kOk) {
+        LOG(WARNING) << "could not hold performance mode; result="
+                     << AidlResult(held.result);
+      }
+    }
   }).detach();
 
   ABinderProcess_joinThreadPool();

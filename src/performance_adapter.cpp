@@ -194,11 +194,15 @@ bool WritePosixFile(void* context, const std::string& path,
     observed.pop_back();
   }
   if (observed != value) {
-    // The kernel took the write and then reported something else, which is
-    // what a clamp looks like from here.
+    // Not a failure. The write landed and something else moved the value,
+    // which on this device is the QTI perf stack doing its job. Deciding what
+    // that means belongs to the service, which reads the node again itself;
+    // this layer only reports whether the write happened.
+    //
+    // A readback that cannot be performed at all is still fail-closed above,
+    // because then nothing is known.
     AYN_PERF_LOG("performance write to " << path << " asked for " << value
                  << " and read back " << observed);
-    return false;
   }
   return true;
 }

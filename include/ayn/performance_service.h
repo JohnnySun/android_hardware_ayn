@@ -78,6 +78,12 @@ class PerformanceService {
   PerformanceResponse Initialize();
   PerformanceResponse GetStatus();
   PerformanceResponse SetMode(PerformanceMode mode);
+  // Rewrites the active mode's targets without the rollback machinery, because
+  // this is maintenance rather than a transition. The QTI perf stack resets
+  // these limits, so a mode is held by reasserting it, which is what the stock
+  // daemon did once a second. Does nothing when the active mode is
+  // kSystemManaged: that mode is the absence of a hold.
+  PerformanceResponse Reassert();
   PerformanceResponse BeginShutdown();
 
  private:

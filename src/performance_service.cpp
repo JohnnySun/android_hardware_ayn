@@ -243,8 +243,14 @@ PerformanceResponse PerformanceService::ApplySnapshotLocked(
       }
       return ResponseLocked(PerformanceResult::kWriteFailed, mode);
     }
+    // A node that cannot be read back leaves the outcome unknown, so that is
+    // still fail-closed. A node that reads back a different value is a known
+    // outcome and an expected one: the QTI perf stack owns these limits and
+    // resets them, which is why the stock daemon rewrote them every second
+    // instead of writing once. Treating it as a failure made every mode
+    // change roll back a write that had in fact landed.
     uint64_t observed = 0;
-    if (!ReadValueLocked(index, &observed) || observed != target[index]) {
+    if (!ReadValueLocked(index, &observed)) {
       if (!RollbackLocked(before, touched, touched_count)) {
         rollback_failed_ = true;
         return ResponseLocked(PerformanceResult::kRollbackFailed, mode);
@@ -289,6 +295,32 @@ PerformanceResponse PerformanceService::SetMode(PerformanceMode mode) {
     return ResponseLocked(PerformanceResult::kOk, mode);
   }
   return ApplySnapshotLocked(mode, TargetForModeLocked(mode));
+}
+
+PerformanceResponse PerformanceService::Reassert() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!initialized_) {
+    return ResponseLocked(PerformanceResult::kNotInitialized, active_mode_);
+  }
+  if (shutdown_started_ || rollback_failed_ ||
+      active_mode_ == PerformanceMode::kSystemManaged) {
+    return ResponseLocked(PerformanceResult::kOk, active_mode_);
+  }
+  if (write_file_ == nullptr) {
+    return ResponseLocked(PerformanceResult::kModeUnavailable, active_mode_);
+  }
+
+  const Snapshot target = TargetForModeLocked(active_mode_);
+  for (size_t index = 0; index < kPerformanceNodeCount; ++index) {
+    if (!write_file_(writer_context_, paths_.nodes[index],
+                     std::to_string(target[index]))) {
+      // No rollback: the mode the owner chose stays chosen, and the next tick
+      // tries again. Undoing a held mode because one write failed once would
+      // be a worse answer than a mode that is briefly not fully applied.
+      return ResponseLocked(PerformanceResult::kWriteFailed, active_mode_);
+    }
+  }
+  return ResponseLocked(PerformanceResult::kOk, active_mode_);
 }
 
 PerformanceResponse PerformanceService::BeginShutdown() {

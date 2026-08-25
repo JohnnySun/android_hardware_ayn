@@ -278,14 +278,16 @@ void NewModesRollBackEveryFailedNode() {
             PerformanceResult::kWriteFailed);
       CHECK(Values(mutated_write) == kBaseline);
 
+      // A node that reads back a different value is no longer a rollback.
+      // The QTI perf stack owns these limits and resets them, so a mode that
+      // rolled back on that could never be applied at all; holding it is the
+      // hold loop's job, exactly as the stock daemon did.
       Harness mismatched_readback;
       PerformanceService mismatched_service =
           Service(&mismatched_readback, ControlPolicy::AllStockModes());
       CHECK(mismatched_service.Initialize().result == PerformanceResult::kOk);
       mismatched_readback.mismatch_after_write_at = index + 1;
-      CHECK(mismatched_service.SetMode(mode).result ==
-            PerformanceResult::kReadbackFailed);
-      CHECK(Values(mismatched_readback) == kBaseline);
+      CHECK(mismatched_service.SetMode(mode).result == PerformanceResult::kOk);
     }
   }
 }
