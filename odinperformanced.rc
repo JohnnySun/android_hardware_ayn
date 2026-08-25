@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+
+# Hung off boot_completed rather than `on boot`, for the same reason the charge
+# daemon is: several of these nodes belong to drivers that appear well after
+# `on boot` fires, and a chown against a path that does not exist yet fails
+# silently. Starting the service from the same trigger means it never runs
+# before it can write.
+#
+# The cpufreq nodes already ship as system:system. The GPU and DDR ones are
+# root-owned, so init has to hand those over.
+on property:sys.boot_completed=1
+    chown system system /sys/class/kgsl/kgsl-3d0/devfreq/min_freq
+    chown system system /sys/class/kgsl/kgsl-3d0/devfreq/max_freq
+    chown system system /sys/devices/system/cpu/bus_dcvs/DDR/hw_min_freq
+    chown system system /sys/devices/system/cpu/bus_dcvs/DDR/soc:qcom,memlat:ddr:gold/min_freq
+    start odinperformanced
+
+service odinperformanced /system/bin/odinperformanced
+    class late_start
+    user system
+    group system
+    disabled

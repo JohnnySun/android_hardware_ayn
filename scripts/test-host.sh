@@ -403,8 +403,16 @@ if ! grep -q 'com.ayn.fan.IOdinFan/default' "$ROOT/src/odinfand.cpp" ||
   exit 1
 fi
 
-if [ -e "$ROOT/odinperformanced.rc" ]; then
-  echo "error: performance scaffolding must not install an init rc" >&2
+# The performance daemon shipped as inert scaffolding until the thermal path
+# could be trusted: no init rc, absent from the product, and limited to Stock
+# Normal. The rc now exists, so what is checked is that it cannot start before
+# the nodes it writes are handed over, which is the failure the charge daemon
+# already hit.
+if ! grep -q 'on property:sys.boot_completed=1' "$ROOT/odinperformanced.rc" ||
+   ! grep -q 'start odinperformanced' "$ROOT/odinperformanced.rc" ||
+   ! grep -q '^    disabled' "$ROOT/odinperformanced.rc" ||
+   ! grep -q 'chown system system /sys/class/kgsl' "$ROOT/odinperformanced.rc"; then
+  echo "error: the performance daemon must be disabled until boot_completed hands it its nodes" >&2
   exit 1
 fi
 
@@ -413,10 +421,10 @@ performance_module="$(sed -n \
   sed -n '/name: "odinperformanced"/,/^}/p')"
 if ! printf '%s\n' "$performance_module" | grep -qx \
      '    name: "odinperformanced",' ||
-   printf '%s\n' "$performance_module" | grep -q 'init_rc' ||
+   ! printf '%s\n' "$performance_module" | grep -q 'init_rc' ||
    printf '%s\n' "$performance_module" | grep -Eq \
      '^[[:space:]]*vendor:[[:space:]]*true'; then
-  echo "error: odinperformanced must remain a system-only unwired binary" >&2
+  echo "error: odinperformanced must ship its init rc and stay off the vendor partition" >&2
   exit 1
 fi
 

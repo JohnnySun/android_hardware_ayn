@@ -521,6 +521,7 @@ cc_binary {
         "src/odinperformanced.cpp",
         "src/performance_adapter.cpp",
     ],
+    init_rc: ["odinperformanced.rc"],
     static_libs: ["libayn_performance_service_core"],
     shared_libs: [
         "com.ayn.performance-ndk",
