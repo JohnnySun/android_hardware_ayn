@@ -31,6 +31,11 @@ using ayn::performance::SysfsPaths;
 
 constexpr size_t kNodeCount = ayn::performance::kPerformanceNodeCount;
 
+// The DDR hardware floor. It refuses every write on the real kernel, so it is
+// advisory: its refusal must not fail a mode change, while the other nine
+// must still fail closed.
+constexpr size_t kAdvisoryNodeIndex = 8;
+
 const SysfsPaths kExpectedPaths = ayn::performance::StockSysfsPaths();
 const std::array<uint64_t, kNodeCount> kBaseline = {
     556800, 2016000, 614400, 2803200, 864000,
@@ -260,6 +265,9 @@ void NewModesRollBackEveryFailedNode() {
   for (PerformanceMode mode : {PerformanceMode::kPerformance,
                                PerformanceMode::kHigh}) {
     for (size_t index = 0; index < kNodeCount; ++index) {
+      if (index == kAdvisoryNodeIndex) {
+        continue;
+      }
       Harness rejected_write;
       PerformanceService rejected_service =
           Service(&rejected_write, ControlPolicy::AllStockModes());
@@ -289,6 +297,28 @@ void NewModesRollBackEveryFailedNode() {
       mismatched_readback.mismatch_after_write_at = index + 1;
       CHECK(mismatched_service.SetMode(mode).result == PerformanceResult::kOk);
     }
+  }
+}
+
+// The one node the kernel refuses outright. A mode change has to survive it,
+// and it must not roll the other nine back.
+void TheAdvisoryNodeMayRefuseWithoutFailingTheMode() {
+  for (PerformanceMode mode : {PerformanceMode::kStockNormal,
+                               PerformanceMode::kPerformance,
+                               PerformanceMode::kHigh}) {
+    Harness harness;
+    PerformanceService service =
+        Service(&harness, ControlPolicy::AllStockModes());
+    CHECK(service.Initialize().result == PerformanceResult::kOk);
+    harness.fail_write_at = kAdvisoryNodeIndex + 1;
+
+    CHECK(service.SetMode(mode).result == PerformanceResult::kOk);
+    CHECK(service.GetStatus().active_mode == mode);
+    CHECK(Values(harness) != kBaseline);
+
+    // Refusing again while the mode is held must not unwind it either.
+    CHECK(service.Reassert().result == PerformanceResult::kOk);
+    CHECK(service.GetStatus().active_mode == mode);
   }
 }
 
@@ -423,6 +453,7 @@ int main() {
     StockNormalTransitionCanRestoreStartupBaseline();
     AllStockModesWriteExactTargetsAndRestoreStartupBaseline();
     NewModesRollBackEveryFailedNode();
+    TheAdvisoryNodeMayRefuseWithoutFailingTheMode();
     NewModesHonorRollbackFailureLatch();
     FailedNormalTransitionRollsBackOrLocksFurtherWrites();
     WriterFailureAfterMutationRollsBackTheAttemptedNode();

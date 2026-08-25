@@ -130,8 +130,8 @@ void WriterAllowsExactlyTheStockTenPaths() {
     auto operations = Operations(&harness);
     CHECK(ayn::performance::WritePosixFile(&operations, path, "902400"));
     CHECK(harness.opened_path == path);
-    // The trailing newline is required: the DDR floor node returns EIO for a
-    // value written without one.
+    // Values reach sysfs newline-terminated, the way a shell redirect writes
+    // them.
     CHECK(harness.written == "902400\n");
   }
 

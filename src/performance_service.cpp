@@ -27,6 +27,16 @@ constexpr std::array<uint64_t, kPerformanceNodeCount> kHighValues = {
     3187200, 680000000, 680000000, 4224000, 4224000,
 };
 
+// The DDR hardware floor is the ninth of the stock ten because the stock
+// daemon writes it, and on this kernel it refuses every write with EIO: every
+// value in available_frequencies, from every caller, changed or unchanged. It
+// stays in the set so the write set still matches the disassembled stock one,
+// and it is marked advisory so its refusal cannot fail a mode change. The
+// other nine still fail closed, because a failure there is real.
+constexpr size_t kDdrHardwareMinimumIndex = 8;
+
+bool IsAdvisoryNode(size_t index) { return index == kDdrHardwareMinimumIndex; }
+
 bool IsSupportedIdentity(const DeviceIdentity& identity) {
   return identity.product_device == "odin2_mini" &&
          identity.product_name == "lineage_odin2_mini" &&
@@ -140,10 +150,19 @@ bool PerformanceService::ReadCompleteSnapshotLocked(Snapshot* snapshot) {
   return true;
 }
 
-bool PerformanceService::WriteValueLocked(size_t index, uint64_t value) {
-  if (write_file_ == nullptr || index >= kPerformanceNodeCount ||
-      !write_file_(writer_context_, paths_.nodes[index],
+bool PerformanceService::WriteNodeLocked(size_t index, uint64_t value) {
+  if (write_file_ == nullptr || index >= kPerformanceNodeCount) {
+    return false;
+  }
+  if (!write_file_(writer_context_, paths_.nodes[index],
                    std::to_string(value))) {
+    return IsAdvisoryNode(index);
+  }
+  return true;
+}
+
+bool PerformanceService::WriteValueLocked(size_t index, uint64_t value) {
+  if (!WriteNodeLocked(index, value)) {
     return false;
   }
   // Same distinction as everywhere else on this path: a node that cannot be
@@ -241,8 +260,7 @@ PerformanceResponse PerformanceService::ApplySnapshotLocked(
 
   for (size_t index = 0; index < kPerformanceNodeCount; ++index) {
     touched[touched_count++] = index;
-    if (!write_file_(writer_context_, paths_.nodes[index],
-                     std::to_string(target[index]))) {
+    if (!WriteNodeLocked(index, target[index])) {
       if (!RollbackLocked(before, touched, touched_count)) {
         rollback_failed_ = true;
         return ResponseLocked(PerformanceResult::kRollbackFailed, mode);
@@ -317,16 +335,26 @@ PerformanceResponse PerformanceService::Reassert() {
   }
 
   const Snapshot target = TargetForModeLocked(active_mode_);
+  bool all_written = true;
   for (size_t index = 0; index < kPerformanceNodeCount; ++index) {
-    if (!write_file_(writer_context_, paths_.nodes[index],
-                     std::to_string(target[index]))) {
+    // An advisory node is not attempted here at all. It would refuse once a
+    // second forever, and a daemon that logs a failure every second is how
+    // the last diagnosis got buried.
+    if (IsAdvisoryNode(index)) {
+      continue;
+    }
+    if (!WriteNodeLocked(index, target[index])) {
       // No rollback: the mode the owner chose stays chosen, and the next tick
       // tries again. Undoing a held mode because one write failed once would
-      // be a worse answer than a mode that is briefly not fully applied.
-      return ResponseLocked(PerformanceResult::kWriteFailed, active_mode_);
+      // be a worse answer than a mode that is briefly not fully applied. The
+      // remaining nodes are still reasserted, because one node refusing is no
+      // reason to leave the rest of the mode unheld.
+      all_written = false;
     }
   }
-  return ResponseLocked(PerformanceResult::kOk, active_mode_);
+  return ResponseLocked(
+      all_written ? PerformanceResult::kOk : PerformanceResult::kWriteFailed,
+      active_mode_);
 }
 
 PerformanceResponse PerformanceService::BeginShutdown() {

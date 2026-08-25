@@ -161,11 +161,10 @@ bool WritePosixFile(void* context, const std::string& path,
     return false;
   }
 
-  // The trailing newline is not cosmetic. The DDR bus_dcvs floor node rejects
-  // a bare "547000" with EIO and accepts "547000\n", and that single missing
-  // byte is what made every performance mode change fail. Every sysfs node
-  // here tolerates the newline, so it is written unconditionally rather than
-  // per node.
+  // The trailing newline is what echo and every other sysfs writer sends, and
+  // every node here tolerates it, so it is written unconditionally. It is not
+  // a fix for anything: the DDR floor node was briefly thought to require it,
+  // and it in fact refuses a value with or without one.
   const std::string payload = value + "\n";
   size_t offset = 0;
   bool write_complete = true;

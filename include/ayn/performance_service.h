@@ -94,6 +94,9 @@ class PerformanceService {
   PerformanceResult GateResultLocked() const;
   bool ReadCompleteSnapshotLocked(Snapshot* snapshot);
   bool ReadValueLocked(size_t index, uint64_t* value);
+  // Writes one node. An advisory node is allowed to refuse: see the comment
+  // on kDdrHardwareMinimumIndex.
+  bool WriteNodeLocked(size_t index, uint64_t value);
   bool WriteValueLocked(size_t index, uint64_t value);
   bool RollbackLocked(const Snapshot& snapshot,
                       const std::array<size_t, kPerformanceNodeCount>& touched,
