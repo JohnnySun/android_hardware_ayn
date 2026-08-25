@@ -50,7 +50,14 @@ class OdinPerformanceBinder final
       : core_(std::move(identity), ayn::performance::StockSysfsPaths(),
               ayn::performance::ReadPosixFile, nullptr,
               ayn::performance::WritePosixFile, nullptr,
-              ayn::performance::ControlPolicy::StockNormalOnly()) {}
+              // All three stock modes. The core has always encoded the
+              // disassembly-proven Normal, Performance and High targets with
+              // rollback tests; the daemon withheld two of them until the
+              // thermal path could be trusted. On 2026-08-25 the framework
+              // began reporting real temperatures and the fan was observed
+              // tracking a four-minute load to 80 C without throttling, so
+              // the reason for withholding them is gone.
+              ayn::performance::ControlPolicy::AllStockModes()) {}
 
   ayn::performance::PerformanceResponse Initialize() {
     return core_.Initialize();

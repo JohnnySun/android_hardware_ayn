@@ -447,7 +447,7 @@ if ! grep -q 'com.ayn.performance.IOdinPerformance/default' \
    ! grep -q 'ro.product.name' "$ROOT/src/odinperformanced.cpp" ||
    ! grep -q 'ro.product.vendor.model' "$ROOT/src/odinperformanced.cpp" ||
    ! grep -q 'WritePosixFile' "$ROOT/src/odinperformanced.cpp" ||
-   ! grep -q 'ControlPolicy::StockNormalOnly' \
+   ! grep -q 'ControlPolicy::AllStockModes' \
       "$ROOT/src/odinperformanced.cpp"; then
   echo "error: performance daemon registration or exact identity inputs are incomplete" >&2
   exit 1
