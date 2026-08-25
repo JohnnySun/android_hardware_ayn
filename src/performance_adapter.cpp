@@ -2,6 +2,19 @@
 
 #include "ayn/performance_adapter.h"
 
+#include <cstring>
+
+// The host tests compile this file without an Android classpath, so the
+// diagnostics are optional rather than a build dependency. Without them a
+// failed mode change reports nothing but "write failed" and every diagnosis
+// has to be made from outside, by guessing which of ten nodes refused.
+#ifdef __ANDROID__
+#include <android-base/logging.h>
+#define AYN_PERF_LOG(expr) LOG(ERROR) << expr
+#else
+#define AYN_PERF_LOG(expr) ((void)0)
+#endif
+
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -114,7 +127,14 @@ bool ReadPosixFile(void*, const std::string& path, std::string* value) {
 
 bool WritePosixFile(void* context, const std::string& path,
                     const std::string& value) {
-  if (!IsAllowedWriterPath(path) || !IsDecimalValue(value)) {
+  if (!IsAllowedWriterPath(path)) {
+    AYN_PERF_LOG("performance write refused: " << path
+                 << " is not an allowed writer path");
+    return false;
+  }
+  if (!IsDecimalValue(value)) {
+    AYN_PERF_LOG("performance write refused: " << value
+                 << " is not a decimal value for " << path);
     return false;
   }
   const auto* operations = context == nullptr
@@ -132,6 +152,8 @@ bool WritePosixFile(void* context, const std::string& path,
     fd = operations->open_writer(operations->context, path.c_str());
   } while (fd < 0 && errno == EINTR);
   if (fd < 0) {
+    AYN_PERF_LOG("performance write could not open " << path << ": "
+                 << strerror(errno));
     return false;
   }
 
@@ -158,17 +180,27 @@ bool WritePosixFile(void* context, const std::string& path,
   const bool close_complete =
       operations->close_writer(operations->context, fd) == 0;
   if (!write_complete || !close_complete) {
+    AYN_PERF_LOG("performance write of " << value << " to " << path
+                 << " failed: " << strerror(errno));
     return false;
   }
 
   std::string observed;
   if (!operations->readback(operations->context, path, &observed)) {
+    AYN_PERF_LOG("performance write could not read back " << path);
     return false;
   }
   if (!observed.empty() && observed.back() == '\n') {
     observed.pop_back();
   }
-  return observed == value;
+  if (observed != value) {
+    // The kernel took the write and then reported something else, which is
+    // what a clamp looks like from here.
+    AYN_PERF_LOG("performance write to " << path << " asked for " << value
+                 << " and read back " << observed);
+    return false;
+  }
+  return true;
 }
 
 }  // namespace ayn::performance
