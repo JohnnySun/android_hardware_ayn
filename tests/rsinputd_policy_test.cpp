@@ -187,12 +187,29 @@ void FaceButtonBitsMatchThePhysicalOdinLabels() {
   }
 }
 
+// What was measured on the device on 2026-08-24: stick axes end between 1242
+// and 1324, triggers between 1511 and 1514 including a press to the hard stop.
+constexpr int32_t kMeasuredWeakestStickEnd = 1242;
+constexpr int32_t kMeasuredStrongestStickEnd = 1324;
+constexpr int32_t kMeasuredWeakestTriggerEnd = 1511;
+
 void Odin2AxisAndTriggerPolicyIsPreserved() {
-  CHECK(ayn::rsinput::kStickAxisMin == -0x500);
-  CHECK(ayn::rsinput::kStickAxisMax == 0x500);
-  CHECK(ayn::rsinput::kStickAxisFlat == 0x80);
+  // The rule, rather than the numbers: a declared range above what the hardware
+  // reaches makes full deflection unreachable, which is the defect the trigger
+  // range had. At or below it only clamps the last fraction.
+  CHECK(ayn::rsinput::kTriggerAxisMax <= kMeasuredWeakestTriggerEnd);
+  CHECK(ayn::rsinput::kStickAxisMax <= kMeasuredStrongestStickEnd);
+  CHECK(-ayn::rsinput::kStickAxisMin == ayn::rsinput::kStickAxisMax);
+
+  // A range far below the weakest axis would throw travel away instead, so it
+  // has to stay inside the measured spread.
+  CHECK(ayn::rsinput::kStickAxisMax >= kMeasuredWeakestStickEnd - 64);
+  CHECK(ayn::rsinput::kTriggerAxisMax >= kMeasuredWeakestTriggerEnd - 64);
+
+  // The rest position has to fall inside the flat zone on every axis; the worst
+  // measured was 89 against a flat of 0x80.
+  CHECK(ayn::rsinput::kStickAxisFlat >= 89);
   CHECK(ayn::rsinput::kTriggerAxisMin == 0);
-  CHECK(ayn::rsinput::kTriggerAxisMax == 0x610);
   CHECK(ayn::rsinput::kTriggerAxisFlat == 30);
 
   Status status;

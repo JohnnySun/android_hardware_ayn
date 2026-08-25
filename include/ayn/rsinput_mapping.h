@@ -38,13 +38,28 @@ constexpr uint16_t kAbsRx = 0x03;
 constexpr uint16_t kAbsRy = 0x04;
 constexpr uint16_t kAbsRz = 0x05;
 
-// The Odin2 Mini MCU reports approximately +/-0x500 at stick end stops.
-// Keep the declared uinput range in the same units as the status protocol.
+// A declared range must sit at or below what the hardware can actually reach.
+// Declaring more than the hardware reaches means full deflection never reads
+// full; declaring less only clamps the last fraction, which reads as reaching
+// full slightly before the mechanical stop. So the bias is always downward.
+//
+// Measured on 2026-08-24 over hundreds of samples per axis: the four stick
+// axes end between 1242 and 1324, and both triggers top out at 1511 to 1514,
+// including a deliberate press to the hard stop.
+//
+// The sticks keep +/-0x500, which is 1280 and sits inside that spread: axes
+// that reach past it clamp to full, and the weakest still reads 97 percent.
+// Widening to the largest observed 1324 would make the weakest axis stop at
+// 94 percent, which is worse.
 constexpr int32_t kStickAxisMin = -0x500;
 constexpr int32_t kStickAxisMax = 0x500;
 constexpr int32_t kStickAxisFlat = 0x80;
 constexpr int32_t kTriggerAxisMin = 0;
-constexpr int32_t kTriggerAxisMax = 0x610;
+// The triggers did need it. At the old 0x610, which is 1552, a trigger pressed
+// to its hard stop reported 97.4 percent and full was unreachable. 1500 is just
+// under the lowest measured maximum, so a full press reads full with a little
+// room for a unit whose triggers end slightly shorter.
+constexpr int32_t kTriggerAxisMax = 1500;
 constexpr int32_t kTriggerAxisFlat = 30;
 
 enum class ControllerProfile : int32_t {
