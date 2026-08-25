@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
-on boot
-    # The charger restriction nodes ship as root-owned, so the daemon cannot
-    # reach them without init handing them over first.
+# qti_battery_charger is a kernel module and its class nodes appear about ten
+# seconds into boot, well after `on boot` fires, so a chown there runs against
+# paths that do not exist yet and silently does nothing. Waiting for
+# boot_completed is late enough to be certain, and starting the service from
+# the same trigger means it never runs before it can write.
+on property:sys.boot_completed=1
     chown system system /sys/class/qcom-battery/restrict_chg
     chown system system /sys/class/qcom-battery/restrict_cur
     chmod 0660 /sys/class/qcom-battery/restrict_chg
     chmod 0660 /sys/class/qcom-battery/restrict_cur
+    start odinchargd
 
 service odinchargd /system/bin/odinchargd
     class late_start
     user system
     group system
+    disabled
