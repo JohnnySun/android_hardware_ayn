@@ -10,7 +10,13 @@
 #include <android/binder_manager.h>
 #include <android/binder_process.h>
 
+#include <fcntl.h>
+
+#include <cerrno>
+#include <charconv>
 #include <csignal>
+#include <cstring>
+#include <string>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -31,6 +37,80 @@ constexpr char kServiceName[] =
 constexpr int kReassertIntervalSeconds = 1;
 constexpr char kScreenStateProperty[] = "debug.tracing.screen_state";
 constexpr char kScreenOffValue[] = "1";
+
+// A mode the owner chose is a setting, not a session. Every desktop system
+// that offers one restores it at boot, and coming up in SYSTEM_MANAGED after
+// the owner asked for Performance is the surprising behaviour, not the safe
+// one. The charge daemon already keeps its mode this way.
+constexpr char kStatePath[] = "/data/system/odin-performance-mode";
+constexpr size_t kMaximumStateBytes = 32;
+
+bool ReadStoredMode(ayn::performance::PerformanceMode* mode) {
+  const int fd = open(kStatePath, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return false;
+  }
+  char buffer[kMaximumStateBytes + 1];
+  ssize_t count = 0;
+  do {
+    count = read(fd, buffer, sizeof(buffer) - 1);
+  } while (count < 0 && errno == EINTR);
+  close(fd);
+  if (count <= 0) {
+    return false;
+  }
+  const char* begin = buffer;
+  const char* end = buffer + count;
+  while (end > begin && (end[-1] == '\n' || end[-1] == ' ')) {
+    --end;
+  }
+  int value = 0;
+  const auto parsed = std::from_chars(begin, end, value);
+  if (parsed.ec != std::errc() || parsed.ptr != end) {
+    return false;
+  }
+  switch (value) {
+    case 0:
+    case 1:
+    case 2:
+    case 3:
+      *mode = static_cast<ayn::performance::PerformanceMode>(value);
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Best effort by design. The mode is already applied by the time this runs,
+// and a mode that works but is not remembered is a far better outcome than a
+// mode change that fails because /data would not take a write.
+void StoreMode(ayn::performance::PerformanceMode mode) {
+  const int fd =
+      open(kStatePath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+  if (fd < 0) {
+    LOG(WARNING) << "could not open " << kStatePath << ": " << strerror(errno);
+    return;
+  }
+  const std::string value =
+      std::to_string(static_cast<int32_t>(mode)) + "\n";
+  size_t offset = 0;
+  while (offset < value.size()) {
+    const ssize_t count =
+        write(fd, value.data() + offset, value.size() - offset);
+    if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      LOG(WARNING) << "could not persist the performance mode: "
+                   << strerror(errno);
+      break;
+    }
+    offset += static_cast<size_t>(count);
+  }
+  close(fd);
+}
+
+void ForgetStoredMode() { unlink(kStatePath); }
 
 int32_t AidlMode(ayn::performance::PerformanceMode mode) {
   return static_cast<int32_t>(mode);
@@ -74,6 +154,11 @@ class OdinPerformanceBinder final
     return core_.Reassert();
   }
 
+  ayn::performance::PerformanceResponse SetModeDirect(
+      ayn::performance::PerformanceMode mode) {
+    return core_.SetMode(mode);
+  }
+
   ayn::performance::PerformanceResponse BeginShutdown() {
     return core_.BeginShutdown();
   }
@@ -87,8 +172,14 @@ class OdinPerformanceBinder final
   ::ndk::ScopedAStatus setMode(
       int32_t mode,
       ::aidl::com::ayn::performance::PerformanceResponse* response) override {
-    *response = ToAidlResponse(core_.SetMode(
-        static_cast<ayn::performance::PerformanceMode>(mode)));
+    const ayn::performance::PerformanceMode requested =
+        static_cast<ayn::performance::PerformanceMode>(mode);
+    const ayn::performance::PerformanceResponse changed =
+        core_.SetMode(requested);
+    if (changed.result == ayn::performance::PerformanceResult::kOk) {
+      StoreMode(changed.active_mode);
+    }
+    *response = ToAidlResponse(changed);
     return ::ndk::ScopedAStatus::ok();
   }
 
@@ -120,6 +211,26 @@ int main() {
     LOG(ERROR) << "refusing registration before complete baseline capture; result="
                << AidlResult(startup.result);
     return EXIT_FAILURE;
+  }
+
+  // Restore before anything can query the service, so the first getStatus
+  // already reports the mode the owner left set. A stored mode that will not
+  // apply is forgotten rather than retried, because a mode that fails every
+  // boot is worse than one that is lost once.
+  ayn::performance::PerformanceMode stored =
+      ayn::performance::PerformanceMode::kSystemManaged;
+  if (ReadStoredMode(&stored) &&
+      stored != ayn::performance::PerformanceMode::kSystemManaged) {
+    const ayn::performance::PerformanceResponse restored =
+        service->SetModeDirect(stored);
+    if (restored.result == ayn::performance::PerformanceResult::kOk) {
+      LOG(INFO) << "restored performance mode " << AidlMode(stored);
+    } else {
+      LOG(WARNING) << "stored performance mode " << AidlMode(stored)
+                   << " would not apply; result="
+                   << AidlResult(restored.result) << ", forgetting it";
+      ForgetStoredMode();
+    }
   }
 
   ABinderProcess_setThreadPoolMaxThreadCount(2);
