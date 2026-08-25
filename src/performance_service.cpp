@@ -146,8 +146,14 @@ bool PerformanceService::WriteValueLocked(size_t index, uint64_t value) {
                    std::to_string(value))) {
     return false;
   }
+  // Same distinction as everywhere else on this path: a node that cannot be
+  // read back leaves the outcome unknown and fails, while a value something
+  // else has already moved is a known outcome and does not. Without this a
+  // rollback could never succeed, because the QTI perf stack resets these
+  // limits faster than the rollback can verify them, and a mode change would
+  // latch rollback_failed_ on a rollback that had in fact written.
   uint64_t observed = 0;
-  return ReadValueLocked(index, &observed) && observed == value;
+  return ReadValueLocked(index, &observed);
 }
 
 bool PerformanceService::RollbackLocked(

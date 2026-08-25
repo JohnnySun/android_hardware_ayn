@@ -95,6 +95,8 @@ bool ReadPosixFile(void*, const std::string& path, std::string* value) {
   }
   const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
   if (fd < 0) {
+    AYN_PERF_LOG("performance read could not open " << path << ": "
+                 << strerror(errno));
     return false;
   }
 
@@ -107,6 +109,8 @@ bool ReadPosixFile(void*, const std::string& path, std::string* value) {
         continue;
       }
       close(fd);
+      AYN_PERF_LOG("performance read of " << path << " failed: "
+                   << strerror(errno));
       return false;
     }
     if (count == 0) {
