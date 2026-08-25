@@ -19,10 +19,19 @@ bool IsValidCapacity(int capacity_percent) {
   return capacity_percent >= 0 && capacity_percent <= 100;
 }
 
+bool IsKnownMode(int mode) {
+  return mode == static_cast<int>(ChargeMode::kOff) ||
+         mode == static_cast<int>(ChargeMode::kLimit) ||
+         mode == static_cast<int>(ChargeMode::kBypass);
+}
+
 bool AreValidSettings(const LimitSettings& settings) {
-  if (!settings.enabled) {
-    // A disabled policy carries no thresholds worth checking; the only action
-    // it can produce is releasing the restriction.
+  if (!IsKnownMode(static_cast<int>(settings.mode))) {
+    return false;
+  }
+  if (settings.mode != ChargeMode::kLimit) {
+    // Off and bypass carry no thresholds worth checking. Off can only release,
+    // and bypass answers from the safety floor alone.
     return true;
   }
   if (settings.stop_percent < kMinimumStopPercent ||
@@ -43,11 +52,15 @@ PolicyDecision Decide(const LimitSettings& settings, int capacity_percent) {
   if (!AreValidSettings(settings) || !IsValidCapacity(capacity_percent)) {
     return {false, ChargeAction::kInvalid};
   }
-  if (!settings.enabled) {
+  if (settings.mode == ChargeMode::kOff) {
     return {true, ChargeAction::kAllow};
   }
+  // The floor outranks every mode, including bypass.
   if (capacity_percent < kNeverRestrictBelowPercent) {
     return {true, ChargeAction::kAllow};
+  }
+  if (settings.mode == ChargeMode::kBypass) {
+    return {true, ChargeAction::kRestrict};
   }
   if (capacity_percent <= settings.resume_percent) {
     return {true, ChargeAction::kAllow};

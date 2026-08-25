@@ -22,15 +22,31 @@ constexpr int kMaximumStopPercent = 99;
 // threshold.
 constexpr int kMinimumHysteresisPercent = 2;
 
-// Never hold charging off a battery that is already low, whatever the settings
-// say. This bounds the damage from a bad stored value.
+// Never hold charging off a battery that is already low, whatever the mode or
+// thresholds say. This bounds the damage from a bad stored value, and it is
+// what stops bypass from running the pack flat when the load outruns the
+// adapter.
 constexpr int kNeverRestrictBelowPercent = 40;
 
+enum class ChargeMode {
+  // Charge normally. The daemon holds no restriction.
+  kOff = 0,
+  // Hold the battery between the resume and stop thresholds.
+  kLimit = 1,
+  // Keep charging off for as long as the adapter is attached, whatever the
+  // capacity, so the pack neither charges nor carries the load. This is not a
+  // hardware bypass: it sets the charge current to zero, so if the system draws
+  // more than the adapter supplies the battery still makes up the difference.
+  kBypass = 2,
+};
+
 struct LimitSettings {
-  bool enabled;
+  ChargeMode mode;
   int stop_percent;
   int resume_percent;
 };
+
+bool IsKnownMode(int mode);
 
 enum class ChargeAction {
   // Inputs could not be trusted. The caller must release the restriction.

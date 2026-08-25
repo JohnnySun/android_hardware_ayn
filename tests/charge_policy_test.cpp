@@ -21,6 +21,8 @@ void Check(bool condition, const char* expression, const char* file, int line) {
 
 using ayn::charge::AreExpectedSysfsPaths;
 using ayn::charge::AreValidSettings;
+using ayn::charge::ChargeMode;
+using ayn::charge::IsKnownMode;
 using ayn::charge::ChargeAction;
 using ayn::charge::Decide;
 using ayn::charge::IsSupportedDevice;
@@ -32,7 +34,11 @@ using ayn::charge::StockSysfsPaths;
 using ayn::charge::SysfsPaths;
 
 LimitSettings Defaults() {
-  return {true, kDefaultStopPercent, kDefaultResumePercent};
+  return {ChargeMode::kLimit, kDefaultStopPercent, kDefaultResumePercent};
+}
+
+LimitSettings Bypass() {
+  return {ChargeMode::kBypass, kDefaultStopPercent, kDefaultResumePercent};
 }
 
 ChargeAction ActionAt(const LimitSettings& settings, int capacity) {
@@ -58,14 +64,16 @@ void HysteresisBandLeavesTheChargerAlone() {
 
 void LowBatteryIsNeverHeldOffTheCharger() {
   // Even a policy that would otherwise restrict must charge a low battery.
-  const LimitSettings aggressive = {true, 50, kNeverRestrictBelowPercent};
+  const LimitSettings aggressive = {ChargeMode::kLimit, 50,
+                                    kNeverRestrictBelowPercent};
   CHECK(ActionAt(aggressive, kNeverRestrictBelowPercent - 1) ==
         ChargeAction::kAllow);
   CHECK(ActionAt(aggressive, 0) == ChargeAction::kAllow);
 }
 
 void DisabledPolicyAlwaysReleasesTheRestriction() {
-  const LimitSettings off = {false, kDefaultStopPercent, kDefaultResumePercent};
+  const LimitSettings off = {ChargeMode::kOff, kDefaultStopPercent,
+                             kDefaultResumePercent};
   CHECK(ActionAt(off, 100) == ChargeAction::kAllow);
   CHECK(ActionAt(off, 0) == ChargeAction::kAllow);
 }
@@ -77,18 +85,26 @@ void UntrustworthyInputFailsClosed() {
 }
 
 void ImpossibleThresholdsAreRejected() {
-  CHECK(!AreValidSettings({true, 80, 80}));   // no band
-  CHECK(!AreValidSettings({true, 80, 81}));   // inverted
-  CHECK(!AreValidSettings({true, 80, 79}));   // band too narrow
-  CHECK(!AreValidSettings({true, 40, 38}));   // stop below the floor
-  CHECK(!AreValidSettings({true, 100, 90}));  // not a limit
-  CHECK(!AreValidSettings({true, 60, 39}));   // resume under the safety floor
-  CHECK(AreValidSettings({true, 80, 75}));
-  CHECK(AreValidSettings({true, 50, 40}));
+  const auto limit = [](int stop, int resume) {
+    return LimitSettings{ChargeMode::kLimit, stop, resume};
+  };
+  CHECK(!AreValidSettings(limit(80, 80)));   // no band
+  CHECK(!AreValidSettings(limit(80, 81)));   // inverted
+  CHECK(!AreValidSettings(limit(80, 79)));   // band too narrow
+  CHECK(!AreValidSettings(limit(40, 38)));   // stop below the floor
+  CHECK(!AreValidSettings(limit(100, 90)));  // not a limit
+  CHECK(!AreValidSettings(limit(60, 39)));   // resume under the safety floor
+  CHECK(AreValidSettings(limit(80, 75)));
+  CHECK(AreValidSettings(limit(50, 40)));
+  // Off and bypass are valid whatever the thresholds say, because neither
+  // consults them.
+  CHECK(AreValidSettings({ChargeMode::kOff, 0, 0}));
+  CHECK(AreValidSettings({ChargeMode::kBypass, 0, 0}));
+  CHECK(!AreValidSettings({static_cast<ChargeMode>(7), 80, 75}));
 }
 
 void RejectedSettingsNeverProduceARestriction() {
-  const LimitSettings inverted = {true, 80, 81};
+  const LimitSettings inverted = {ChargeMode::kLimit, 80, 81};
   const auto decision = Decide(inverted, 100);
   CHECK(!decision.valid);
   CHECK(decision.action != ChargeAction::kRestrict);
@@ -122,6 +138,34 @@ void ThresholdsSweepMonotonically() {
   CHECK(seen_restrict);
 }
 
+void BypassHoldsChargingOffAtAnyCapacityAboveTheFloor() {
+  CHECK(ActionAt(Bypass(), 100) == ChargeAction::kRestrict);
+  CHECK(ActionAt(Bypass(), 90) == ChargeAction::kRestrict);
+  CHECK(ActionAt(Bypass(), kNeverRestrictBelowPercent) ==
+        ChargeAction::kRestrict);
+  // Bypass ignores the limit thresholds entirely: 50 sits inside the default
+  // band where limit mode would hold.
+  CHECK(ActionAt(Bypass(), 50) == ChargeAction::kRestrict);
+}
+
+void TheFloorOutranksBypass() {
+  // If the load outruns the adapter the pack drains, and bypass must let go
+  // before the device dies rather than holding charging off to the end.
+  CHECK(ActionAt(Bypass(), kNeverRestrictBelowPercent - 1) ==
+        ChargeAction::kAllow);
+  CHECK(ActionAt(Bypass(), 5) == ChargeAction::kAllow);
+  CHECK(ActionAt(Bypass(), 0) == ChargeAction::kAllow);
+}
+
+void OnlyTheThreeModesExist() {
+  CHECK(IsKnownMode(0));
+  CHECK(IsKnownMode(1));
+  CHECK(IsKnownMode(2));
+  CHECK(!IsKnownMode(-1));
+  CHECK(!IsKnownMode(3));
+  CHECK(!Decide({static_cast<ChargeMode>(3), 80, 75}, 90).valid);
+}
+
 }  // namespace
 
 int main() {
@@ -142,6 +186,10 @@ int main() {
       {"unknown device and moved paths are refused",
        UnknownDeviceAndPathsAreRefused},
       {"thresholds sweep monotonically", ThresholdsSweepMonotonically},
+      {"bypass holds charging off at any capacity above the floor",
+       BypassHoldsChargingOffAtAnyCapacityAboveTheFloor},
+      {"the floor outranks bypass", TheFloorOutranksBypass},
+      {"only the three modes exist", OnlyTheThreeModesExist},
   };
 
   size_t passed = 0;

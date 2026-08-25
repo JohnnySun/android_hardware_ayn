@@ -22,6 +22,7 @@ void Check(bool condition, const char* expression, const char* file, int line) {
 
 using ayn::charge::ApplyOnceUnlessStopped;
 using ayn::charge::ApplyResult;
+using ayn::charge::ChargeMode;
 using ayn::charge::kDefaultResumePercent;
 using ayn::charge::kDefaultStopPercent;
 using ayn::charge::LimitSettings;
@@ -33,7 +34,7 @@ using ayn::charge::StockSysfsPaths;
 using ayn::charge::SysfsPaths;
 
 LimitSettings Defaults() {
-  return {true, kDefaultStopPercent, kDefaultResumePercent};
+  return {ChargeMode::kLimit, kDefaultStopPercent, kDefaultResumePercent};
 }
 
 struct Harness {
@@ -172,7 +173,7 @@ void ImpossibleSettingsReleaseTheRestriction() {
   Harness harness;
   harness.SetCapacity(90);
   harness.SetRestricted(true);
-  const LimitSettings inverted = {true, 80, 81};
+  const LimitSettings inverted = {ChargeMode::kLimit, 80, 81};
   CHECK(Apply(harness, inverted) == ApplyResult::kFailedClosed);
   CHECK(!harness.Restricted());
 }
@@ -233,6 +234,29 @@ void CapacityParsingRejectsRubbish() {
   CHECK(!ParseCapacity("80%\n", &value));
 }
 
+void BypassRestrictsWithoutConsultingTheThresholds() {
+  Harness harness;
+  harness.SetCapacity(50);
+  const LimitSettings bypass = {ChargeMode::kBypass, kDefaultStopPercent,
+                                kDefaultResumePercent};
+  CHECK(ApplyOnceUnlessStopped("odin2_mini", StockSysfsPaths(), bypass,
+                               StopRequested, &harness, ReadFile, &harness,
+                               WriteFile, &harness) == ApplyResult::kRestricted);
+  CHECK(harness.Restricted());
+}
+
+void SwitchingToOffReleasesImmediately() {
+  Harness harness;
+  harness.SetCapacity(100);
+  harness.SetRestricted(true);
+  const LimitSettings off = {ChargeMode::kOff, kDefaultStopPercent,
+                             kDefaultResumePercent};
+  CHECK(ApplyOnceUnlessStopped("odin2_mini", StockSysfsPaths(), off,
+                               StopRequested, &harness, ReadFile, &harness,
+                               WriteFile, &harness) == ApplyResult::kReleased);
+  CHECK(!harness.Restricted());
+}
+
 }  // namespace
 
 int main() {
@@ -262,6 +286,9 @@ int main() {
       {"the loop never exits leaving charging blocked",
        TheLoopNeverExitsLeavingChargingBlocked},
       {"capacity parsing rejects rubbish", CapacityParsingRejectsRubbish},
+      {"bypass restricts without consulting the thresholds",
+       BypassRestrictsWithoutConsultingTheThresholds},
+      {"switching to off releases immediately", SwitchingToOffReleasesImmediately},
   };
 
   size_t passed = 0;
