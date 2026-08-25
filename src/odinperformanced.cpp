@@ -26,6 +26,12 @@ namespace {
 constexpr char kServiceName[] =
     "com.ayn.performance.IOdinPerformance/default";
 
+// Matches the stock daemon's cadence and its screen-state skip, both read out
+// of its disassembly and recorded in stock-performance-mode-consumer.json.
+constexpr int kReassertIntervalSeconds = 1;
+constexpr char kScreenStateProperty[] = "debug.tracing.screen_state";
+constexpr char kScreenOffValue[] = "1";
+
 int32_t AidlMode(ayn::performance::PerformanceMode mode) {
   return static_cast<int32_t>(mode);
 }
