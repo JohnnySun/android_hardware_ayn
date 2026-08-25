@@ -130,7 +130,9 @@ void WriterAllowsExactlyTheStockTenPaths() {
     auto operations = Operations(&harness);
     CHECK(ayn::performance::WritePosixFile(&operations, path, "902400"));
     CHECK(harness.opened_path == path);
-    CHECK(harness.written == "902400");
+    // The trailing newline is required: the DDR floor node returns EIO for a
+    // value written without one.
+    CHECK(harness.written == "902400\n");
   }
 
   WriterHarness harness;
@@ -150,8 +152,10 @@ void WriterRetriesEintrAndCompletesShortWrites() {
   CHECK(ayn::performance::WritePosixFile(
       &operations, kExpectedWriterPaths[0], "902400"));
   CHECK(harness.open_calls == 2);
-  CHECK(harness.write_calls == 4);
-  CHECK(harness.written == "902400");
+  // Seven payload bytes in two-byte chunks is four writes, plus the one that
+  // reported EINTR.
+  CHECK(harness.write_calls == 5);
+  CHECK(harness.written == "902400\n");
   CHECK(harness.close_calls == 1);
   CHECK(harness.readback_calls == 1);
 }
