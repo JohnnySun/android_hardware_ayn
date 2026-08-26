@@ -21,7 +21,9 @@
 namespace {
 
 constexpr char kServiceName[] = "com.ayn.charge.IOdinCharge/default";
-constexpr char kStatePath[] = "/data/system/odin-charge-mode";
+// See odinperformanced.cpp: /data/system is system_data_file, which AOSP
+// neverallows writing, so the persisted mode needs a type of its own.
+constexpr char kStatePath[] = "/data/misc/odin/charge-mode";
 constexpr size_t kMaximumValueBytes = 32;
 
 volatile sig_atomic_t g_terminated = 0;

@@ -1,5 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
+# Both the charge and the performance daemon persist their mode here. The
+# mkdir is declared in each of their rc files rather than in one of them: it is
+# idempotent, and it means either daemon still works if the other is not
+# shipped. post-fs-data is the earliest point /data is writable.
+on post-fs-data
+    mkdir /data/misc/odin 0700 system system
+
 # qti_battery_charger is a kernel module and its class nodes appear about ten
 # seconds into boot, well after `on boot` fires, so a chown there runs against
 # paths that do not exist yet and silently does nothing. Waiting for

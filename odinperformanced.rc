@@ -1,5 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
+# Both the charge and the performance daemon persist their mode here. The
+# mkdir is declared in each of their rc files rather than in one of them: it is
+# idempotent, and it means either daemon still works if the other is not
+# shipped. post-fs-data is the earliest point /data is writable.
+on post-fs-data
+    mkdir /data/misc/odin 0700 system system
+
 # Hung off boot_completed rather than `on boot`, for the same reason the charge
 # daemon is: several of these nodes belong to drivers that appear well after
 # `on boot` fires, and a chown against a path that does not exist yet fails

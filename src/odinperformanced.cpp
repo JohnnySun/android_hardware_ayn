@@ -42,7 +42,11 @@ constexpr char kScreenOffValue[] = "1";
 // that offers one restores it at boot, and coming up in SYSTEM_MANAGED after
 // the owner asked for Performance is the surprising behaviour, not the safe
 // one. The charge daemon already keeps its mode this way.
-constexpr char kStatePath[] = "/data/system/odin-performance-mode";
+// Under /data/misc/odin rather than /data/system: every file in the latter
+// carries system_data_file, which AOSP neverallows any domain writing, so the
+// policy for this simply would not compile. The state has its own type here.
+// Moving it resets a mode set before this build, once.
+constexpr char kStatePath[] = "/data/misc/odin/performance-mode";
 constexpr size_t kMaximumStateBytes = 32;
 
 bool ReadStoredMode(ayn::performance::PerformanceMode* mode) {
