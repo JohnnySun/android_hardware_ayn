@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ayn/charge_service.h"
 
+#include <aidl/android/hardware/health/IHealth.h>
 #include <aidl/com/ayn/charge/BnOdinCharge.h>
 #include <aidl/com/ayn/charge/ChargeResponse.h>
 #include <android-base/logging.h>
@@ -15,6 +16,7 @@
 #include <ctime>
 #include <fcntl.h>
 #include <pthread.h>
+#include <memory>
 #include <string>
 #include <unistd.h>
 
@@ -178,6 +180,39 @@ class OdinChargeBinder : public ::aidl::com::ayn::charge::BnOdinCharge {
 
 }  // namespace
 
+// Battery capacity used to come from
+// /sys/class/power_supply/battery/capacity, which carries
+// vendor_sysfs_battery_supply. A coredomain cannot be granted a vendor-private
+// type from system_ext policy, so that read only ever succeeded because the
+// device was Permissive, and it was 460 of this daemon's denials. The health
+// HAL publishes the same number and crossing at the HAL is what Treble is for.
+//
+// The handle is cached because the poll is every thirty seconds, and dropped
+// on any failure so a HAL that restarts is picked up on the next poll rather
+// than leaving the daemon permanently unable to read a capacity - which would
+// release the restriction and quietly stop limiting the charge.
+bool ReadHealthCapacity(void*, int* capacity_percent) {
+  using aidl::android::hardware::health::IHealth;
+  static std::shared_ptr<IHealth> health;
+
+  if (health == nullptr) {
+    ndk::SpAIBinder binder(
+        AServiceManager_checkService("android.hardware.health.IHealth/default"));
+    health = IHealth::fromBinder(binder);
+    if (health == nullptr) {
+      return false;
+    }
+  }
+
+  int32_t value = 0;
+  if (!health->getCapacity(&value).isOk()) {
+    health.reset();
+    return false;
+  }
+  *capacity_percent = value;
+  return true;
+}
+
 int main() {
   sigset_t termination_signals;
   sigemptyset(&termination_signals);
@@ -192,8 +227,10 @@ int main() {
       android::base::GetProperty("ro.product.device", "");
 
   ayn::charge::ChargeService core(
-      product_device, ayn::charge::StockSysfsPaths(), ReadPosixFile, nullptr,
-      WritePosixFile, nullptr, ReadStateFile, nullptr, WriteStateFile, nullptr);
+      product_device, ayn::charge::StockSysfsPaths(),
+      ayn::charge::CapacitySource{ReadHealthCapacity, nullptr}, ReadPosixFile,
+      nullptr, WritePosixFile, nullptr, ReadStateFile, nullptr, WriteStateFile,
+      nullptr);
 
   const ayn::charge::ServiceResponse started = core.Start();
   if (started.result != ayn::charge::ServiceResult::kOk) {

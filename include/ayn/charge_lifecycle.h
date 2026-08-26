@@ -31,7 +31,17 @@ using SysfsWriter = bool (*)(void* context, const std::string& path,
                              const std::string& value);
 using SleepForSeconds = bool (*)(void* context, int seconds);
 
-bool ParseCapacity(const std::string& raw, int* capacity_percent);
+// Capacity does not come from sysfs. /sys/class/power_supply/battery/capacity
+// carries vendor_sysfs_battery_supply, a vendor-private type that a coredomain
+// cannot be granted from system_ext policy, so reading it directly only ever
+// worked because the device was Permissive - and it was 460 of this daemon's
+// denials. The health HAL publishes the same number over binder and is the
+// route Treble intends, so the source is a callback rather than a path.
+struct CapacitySource {
+  bool (*read)(void* context, int* capacity_percent);
+  void* context;
+};
+
 bool ParseRestrictFlag(const std::string& raw, bool* restricted);
 
 // Clears the restriction whatever the settings say, and deliberately without a
@@ -47,6 +57,7 @@ ApplyResult ReleaseRestriction(const std::string& product_device,
 ApplyResult ApplyOnceUnlessStopped(const std::string& product_device,
                                    const SysfsPaths& paths,
                                    const LimitSettings& settings,
+                                   const CapacitySource& capacity,
                                    StopRequested stop_requested,
                                    void* stop_context, SysfsReader read_file,
                                    void* reader_context, SysfsWriter write_file,
@@ -54,9 +65,9 @@ ApplyResult ApplyOnceUnlessStopped(const std::string& product_device,
 
 LoopResult RunLimitLoopUnlessStopped(
     const std::string& product_device, const SysfsPaths& paths,
-    const LimitSettings& settings, StopRequested stop_requested,
-    void* stop_context, SysfsReader read_file, void* reader_context,
-    SysfsWriter write_file, void* writer_context,
+    const LimitSettings& settings, const CapacitySource& capacity,
+    StopRequested stop_requested, void* stop_context, SysfsReader read_file,
+    void* reader_context, SysfsWriter write_file, void* writer_context,
     SleepForSeconds sleep_for_seconds, void* sleep_context);
 
 }  // namespace ayn::charge

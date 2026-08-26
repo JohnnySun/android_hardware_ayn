@@ -68,8 +68,9 @@ struct PolicyDecision {
   }
 };
 
+// Capacity is deliberately absent. It does not come from sysfs any more; see
+// CapacitySource in charge_lifecycle.h for why.
 struct SysfsPaths {
-  std::string capacity;
   std::string restrict_chg;
   std::string restrict_cur;
 };

@@ -371,6 +371,9 @@ cc_binary {
     srcs: ["src/odinchargd.cpp"],
     static_libs: ["libayn_charge_core"],
     shared_libs: [
+        // Only getCapacity is used, which has been in the interface since V1,
+        // so the lowest version present is the least coupling.
+        "android.hardware.health-V2-ndk",
         "com.ayn.charge-ndk",
         "libbase",
         "libbinder_ndk",

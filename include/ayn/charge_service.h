@@ -54,7 +54,8 @@ bool ParseState(const std::string& raw, ChargeMode* mode, int* stop_percent,
 class ChargeService {
  public:
   ChargeService(std::string product_device, SysfsPaths paths,
-                SysfsReader read_file, void* reader_context,
+                CapacitySource capacity, SysfsReader read_file,
+                void* reader_context,
                 SysfsWriter write_file, void* writer_context,
                 StateReader read_state, void* state_reader_context,
                 StateWriter write_state, void* state_writer_context);
@@ -78,6 +79,7 @@ class ChargeService {
 
   const std::string product_device_;
   const SysfsPaths paths_;
+  const CapacitySource capacity_;
   const SysfsReader read_file_;
   void* const reader_context_;
   const SysfsWriter write_file_;

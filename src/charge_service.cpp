@@ -89,13 +89,15 @@ bool ParseMode(const std::string& raw, ChargeMode* mode) {
 }
 
 ChargeService::ChargeService(std::string product_device, SysfsPaths paths,
-                             SysfsReader read_file, void* reader_context,
+                             CapacitySource capacity, SysfsReader read_file,
+                             void* reader_context,
                              SysfsWriter write_file, void* writer_context,
                              StateReader read_state, void* state_reader_context,
                              StateWriter write_state,
                              void* state_writer_context)
     : product_device_(std::move(product_device)),
       paths_(std::move(paths)),
+      capacity_(capacity),
       read_file_(read_file),
       reader_context_(reader_context),
       write_file_(write_file),
@@ -110,11 +112,10 @@ ServiceResponse ChargeService::SnapshotLocked(ServiceResult result) {
   response.result = result;
   response.mode = mode_;
 
-  std::string raw_capacity;
   int capacity = -1;
-  const bool capacity_ok =
-      read_file_(reader_context_, paths_.capacity, &raw_capacity) &&
-      ParseCapacity(raw_capacity, &capacity);
+  const bool capacity_ok = capacity_.read != nullptr &&
+                           capacity_.read(capacity_.context, &capacity) &&
+                           IsValidCapacity(capacity);
 
   std::string raw_restricted;
   bool restricted = false;
@@ -141,8 +142,9 @@ ServiceResponse ChargeService::ApplyLocked() {
   auto stop_never = [](void*) { return false; };
   const ApplyResult applied = ApplyOnceUnlessStopped(
       product_device_, paths_,
-      SettingsFor(mode_, stop_percent_, resume_percent_), stop_never, nullptr,
-      read_file_, reader_context_, write_file_, writer_context_);
+      SettingsFor(mode_, stop_percent_, resume_percent_), capacity_,
+      stop_never, nullptr, read_file_, reader_context_, write_file_,
+      writer_context_);
 
   switch (applied) {
     case ApplyResult::kRestricted:

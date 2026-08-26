@@ -36,19 +36,32 @@ struct Harness {
   bool fail_writes = false;
   int state_writes = 0;
 
+  int capacity = 100;
+  bool fail_capacity = false;
+
   Harness() {
     const SysfsPaths& p = StockSysfsPaths();
-    files[p.capacity] = "100\n";
     files[p.restrict_chg] = "0\n";
     files[p.restrict_cur] = "1000000\n";
   }
-  void SetCapacity(int v) {
-    files[StockSysfsPaths().capacity] = std::to_string(v) + "\n";
-  }
+  void SetCapacity(int v) { capacity = v; }
   bool Restricted() const {
     return files.at(StockSysfsPaths().restrict_chg) == "1\n";
   }
 };
+
+bool ReadCapacity(void* c, int* capacity_percent) {
+  Harness& h = *static_cast<Harness*>(c);
+  if (h.fail_capacity) {
+    return false;
+  }
+  *capacity_percent = h.capacity;
+  return true;
+}
+
+ayn::charge::CapacitySource CapacityFrom(Harness& h) {
+  return {ReadCapacity, &h};
+}
 
 bool ReadFile(void* c, const std::string& path, std::string* v) {
   Harness& h = *static_cast<Harness*>(c);
@@ -78,8 +91,8 @@ bool WriteState(void* c, const std::string& v) {
 }
 
 ChargeService Make(Harness& h, const std::string& device = "odin2_mini") {
-  return ChargeService(device, StockSysfsPaths(), ReadFile, &h, WriteFile, &h,
-                       ReadState, &h, WriteState, &h);
+  return ChargeService(device, StockSysfsPaths(), CapacityFrom(h), ReadFile, &h,
+                       WriteFile, &h, ReadState, &h, WriteState, &h);
 }
 
 void StartWithoutStoredStateUsesTheLimitDefault() {

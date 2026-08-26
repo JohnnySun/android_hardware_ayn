@@ -66,10 +66,6 @@ bool ReadRestricted(SysfsReader read_file, void* reader_context,
 
 }  // namespace
 
-bool ParseCapacity(const std::string& raw, int* capacity_percent) {
-  return ParseBoundedInteger(raw, 0, 100, capacity_percent);
-}
-
 bool ParseRestrictFlag(const std::string& raw, bool* restricted) {
   int value = 0;
   if (!ParseBoundedInteger(raw, 0, 1, &value)) {
@@ -102,6 +98,7 @@ ApplyResult ReleaseRestriction(const std::string& product_device,
 ApplyResult ApplyOnceUnlessStopped(const std::string& product_device,
                                    const SysfsPaths& paths,
                                    const LimitSettings& settings,
+                                   const CapacitySource& capacity,
                                    StopRequested stop_requested,
                                    void* stop_context, SysfsReader read_file,
                                    void* reader_context, SysfsWriter write_file,
@@ -118,10 +115,10 @@ ApplyResult ApplyOnceUnlessStopped(const std::string& product_device,
     return ApplyResult::kFailedClosed;
   }
 
-  std::string raw_capacity;
   int capacity_percent = 0;
-  if (!ReadTrimmed(read_file, reader_context, paths.capacity, &raw_capacity) ||
-      !ParseCapacity(raw_capacity, &capacity_percent)) {
+  if (capacity.read == nullptr ||
+      !capacity.read(capacity.context, &capacity_percent) ||
+      !IsValidCapacity(capacity_percent)) {
     // An unreadable capacity must not leave charging held off.
     if (restricted &&
         !WriteRestriction(write_file, writer_context, paths, false)) {
@@ -154,13 +151,13 @@ ApplyResult ApplyOnceUnlessStopped(const std::string& product_device,
 
 LoopResult RunLimitLoopUnlessStopped(
     const std::string& product_device, const SysfsPaths& paths,
-    const LimitSettings& settings, StopRequested stop_requested,
-    void* stop_context, SysfsReader read_file, void* reader_context,
-    SysfsWriter write_file, void* writer_context,
+    const LimitSettings& settings, const CapacitySource& capacity,
+    StopRequested stop_requested, void* stop_context, SysfsReader read_file,
+    void* reader_context, SysfsWriter write_file, void* writer_context,
     SleepForSeconds sleep_for_seconds, void* sleep_context) {
   while (true) {
     const ApplyResult result = ApplyOnceUnlessStopped(
-        product_device, paths, settings, stop_requested, stop_context,
+        product_device, paths, settings, capacity, stop_requested, stop_context,
         read_file, reader_context, write_file, writer_context);
     if (result == ApplyResult::kFailedClosed) {
       return LoopResult::kFailedClosed;

@@ -6,7 +6,6 @@ namespace {
 
 const SysfsPaths& StockPaths() {
   static const SysfsPaths paths = {
-      "/sys/class/power_supply/battery/capacity",
       "/sys/class/qcom-battery/restrict_chg",
       "/sys/class/qcom-battery/restrict_cur",
   };
@@ -79,8 +78,7 @@ bool IsSupportedDevice(const std::string& product_device) {
 
 bool AreExpectedSysfsPaths(const SysfsPaths& paths) {
   const SysfsPaths& expected = StockPaths();
-  return paths.capacity == expected.capacity &&
-         paths.restrict_chg == expected.restrict_chg &&
+  return paths.restrict_chg == expected.restrict_chg &&
          paths.restrict_cur == expected.restrict_cur;
 }
 

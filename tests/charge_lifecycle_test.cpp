@@ -27,7 +27,6 @@ using ayn::charge::kDefaultResumePercent;
 using ayn::charge::kDefaultStopPercent;
 using ayn::charge::LimitSettings;
 using ayn::charge::LoopResult;
-using ayn::charge::ParseCapacity;
 using ayn::charge::ReleaseRestriction;
 using ayn::charge::RunLimitLoopUnlessStopped;
 using ayn::charge::StockSysfsPaths;
@@ -46,16 +45,16 @@ struct Harness {
   int sleeps = 0;
   int sleep_until_stop = -1;
 
+  int capacity = 50;
+  bool fail_capacity = false;
+
   Harness() {
     const SysfsPaths& paths = StockSysfsPaths();
-    files[paths.capacity] = "50\n";
     files[paths.restrict_chg] = "0\n";
     files[paths.restrict_cur] = "1000000\n";
   }
 
-  void SetCapacity(int percent) {
-    files[StockSysfsPaths().capacity] = std::to_string(percent) + "\n";
-  }
+  void SetCapacity(int percent) { capacity = percent; }
   void SetRestricted(bool restricted) {
     files[StockSysfsPaths().restrict_chg] = restricted ? "1\n" : "0\n";
   }
@@ -92,6 +91,19 @@ bool WriteFile(void* context, const std::string& path,
   return true;
 }
 
+bool ReadCapacity(void* context, int* capacity_percent) {
+  Harness& harness = *static_cast<Harness*>(context);
+  if (harness.fail_capacity) {
+    return false;
+  }
+  *capacity_percent = harness.capacity;
+  return true;
+}
+
+ayn::charge::CapacitySource CapacityFrom(Harness& harness) {
+  return {ReadCapacity, &harness};
+}
+
 bool SleepForSeconds(void* context, int) {
   Harness& harness = *static_cast<Harness*>(context);
   ++harness.sleeps;
@@ -105,8 +117,8 @@ bool SleepForSeconds(void* context, int) {
 ApplyResult Apply(Harness& harness, const LimitSettings& settings = Defaults(),
                   const std::string& device = "odin2_mini") {
   return ApplyOnceUnlessStopped(device, StockSysfsPaths(), settings,
-                                StopRequested, &harness, ReadFile, &harness,
-                                WriteFile, &harness);
+                                CapacityFrom(harness), StopRequested, &harness,
+                                ReadFile, &harness, WriteFile, &harness);
 }
 
 void ReachingTheStopThresholdRestrictsCharging() {
@@ -153,18 +165,21 @@ void AnAlreadyCorrectStateWritesNothing() {
 }
 
 void AnUnreadableCapacityReleasesTheRestriction() {
-  // The failure must never be "battery stays uncharged".
+  // The failure must never be "battery stays uncharged". A health HAL that is
+  // not up yet, or has died, reaches the daemon exactly this way.
   Harness harness;
   harness.SetRestricted(true);
-  harness.files.erase(StockSysfsPaths().capacity);
+  harness.fail_capacity = true;
   CHECK(Apply(harness) == ApplyResult::kFailedClosed);
   CHECK(!harness.Restricted());
 }
 
-void AMalformedCapacityReleasesTheRestriction() {
+void AnOutOfRangeCapacityReleasesTheRestriction() {
+  // The sysfs source could return text that was not a number; the HAL returns
+  // an int, so the equivalent failure is a value outside 0..100.
   Harness harness;
   harness.SetRestricted(true);
-  harness.files[StockSysfsPaths().capacity] = "full\n";
+  harness.SetCapacity(255);
   CHECK(Apply(harness) == ApplyResult::kFailedClosed);
   CHECK(!harness.Restricted());
 }
@@ -217,21 +232,11 @@ void TheLoopNeverExitsLeavingChargingBlocked() {
   harness.SetCapacity(90);
   harness.sleep_until_stop = 2;
   const LoopResult result = RunLimitLoopUnlessStopped(
-      "odin2_mini", StockSysfsPaths(), Defaults(), StopRequested, &harness,
-      ReadFile, &harness, WriteFile, &harness, SleepForSeconds, &harness);
+      "odin2_mini", StockSysfsPaths(), Defaults(), CapacityFrom(harness),
+      StopRequested, &harness, ReadFile, &harness, WriteFile, &harness,
+      SleepForSeconds, &harness);
   CHECK(result == LoopResult::kStopped);
   CHECK(!harness.Restricted());
-}
-
-void CapacityParsingRejectsRubbish() {
-  int value = -1;
-  CHECK(ParseCapacity("0\n", &value) && value == 0);
-  CHECK(ParseCapacity("100\n", &value) && value == 100);
-  CHECK(!ParseCapacity("101\n", &value));
-  CHECK(!ParseCapacity("-5\n", &value));
-  CHECK(!ParseCapacity("", &value));
-  CHECK(!ParseCapacity("full\n", &value));
-  CHECK(!ParseCapacity("80%\n", &value));
 }
 
 void BypassRestrictsWithoutConsultingTheThresholds() {
@@ -240,7 +245,8 @@ void BypassRestrictsWithoutConsultingTheThresholds() {
   const LimitSettings bypass = {ChargeMode::kBypass, kDefaultStopPercent,
                                 kDefaultResumePercent};
   CHECK(ApplyOnceUnlessStopped("odin2_mini", StockSysfsPaths(), bypass,
-                               StopRequested, &harness, ReadFile, &harness,
+                               CapacityFrom(harness), StopRequested, &harness,
+                               ReadFile, &harness,
                                WriteFile, &harness) == ApplyResult::kRestricted);
   CHECK(harness.Restricted());
 }
@@ -252,7 +258,8 @@ void SwitchingToOffReleasesImmediately() {
   const LimitSettings off = {ChargeMode::kOff, kDefaultStopPercent,
                              kDefaultResumePercent};
   CHECK(ApplyOnceUnlessStopped("odin2_mini", StockSysfsPaths(), off,
-                               StopRequested, &harness, ReadFile, &harness,
+                               CapacityFrom(harness), StopRequested, &harness,
+                               ReadFile, &harness,
                                WriteFile, &harness) == ApplyResult::kReleased);
   CHECK(!harness.Restricted());
 }
@@ -272,8 +279,8 @@ int main() {
        AnAlreadyCorrectStateWritesNothing},
       {"an unreadable capacity releases the restriction",
        AnUnreadableCapacityReleasesTheRestriction},
-      {"a malformed capacity releases the restriction",
-       AMalformedCapacityReleasesTheRestriction},
+      {"an out of range capacity releases the restriction",
+       AnOutOfRangeCapacityReleasesTheRestriction},
       {"impossible settings release the restriction",
        ImpossibleSettingsReleaseTheRestriction},
       {"an unknown device writes nothing", AnUnknownDeviceWritesNothing},
@@ -285,7 +292,6 @@ int main() {
        ReleasingAnUnrestrictedChargerWritesNothing},
       {"the loop never exits leaving charging blocked",
        TheLoopNeverExitsLeavingChargingBlocked},
-      {"capacity parsing rejects rubbish", CapacityParsingRejectsRubbish},
       {"bypass restricts without consulting the thresholds",
        BypassRestrictsWithoutConsultingTheThresholds},
       {"switching to off releases immediately", SwitchingToOffReleasesImmediately},
