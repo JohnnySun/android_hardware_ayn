@@ -187,30 +187,42 @@ class OdinChargeBinder : public ::aidl::com::ayn::charge::BnOdinCharge {
 // device was Permissive, and it was 460 of this daemon's denials. The health
 // HAL publishes the same number and crossing at the HAL is what Treble is for.
 //
-// The handle is cached because the poll is every thirty seconds, and dropped
-// on any failure so a HAL that restarts is picked up on the next poll rather
-// than leaving the daemon permanently unable to read a capacity - which would
-// release the restriction and quietly stop limiting the charge.
+// This trades a read that could not fail transiently for one that can: a sysfs
+// read either works or the hardware is broken, while a binder call can fail
+// because the HAL is mid-restart. That matters, because an unknown capacity
+// releases the restriction by design - the daemon must never be the reason a
+// battery cannot charge - so treating a restart as "capacity unknown" would
+// silently stop limiting the charge. Hence the retry: a stale handle is
+// re-acquired and the call repeated once, inside the same poll, which is
+// exactly the case a restart produces. A second failure is a real failure and
+// the safe release stands.
+//
+// The handle is cached across polls rather than re-acquired every thirty
+// seconds. The static is safe without its own lock because every path into
+// this callback runs under ChargeService's mutex - the *Locked suffix in that
+// class marks the invariant.
 bool ReadHealthCapacity(void*, int* capacity_percent) {
   using aidl::android::hardware::health::IHealth;
   static std::shared_ptr<IHealth> health;
 
-  if (health == nullptr) {
-    ndk::SpAIBinder binder(
-        AServiceManager_checkService("android.hardware.health.IHealth/default"));
-    health = IHealth::fromBinder(binder);
+  for (int attempt = 0; attempt < 2; ++attempt) {
     if (health == nullptr) {
-      return false;
+      ndk::SpAIBinder binder(AServiceManager_checkService(
+          "android.hardware.health.IHealth/default"));
+      health = IHealth::fromBinder(binder);
+      if (health == nullptr) {
+        return false;
+      }
     }
-  }
 
-  int32_t value = 0;
-  if (!health->getCapacity(&value).isOk()) {
+    int32_t value = 0;
+    if (health->getCapacity(&value).isOk()) {
+      *capacity_percent = value;
+      return true;
+    }
     health.reset();
-    return false;
   }
-  *capacity_percent = value;
-  return true;
+  return false;
 }
 
 int main() {
