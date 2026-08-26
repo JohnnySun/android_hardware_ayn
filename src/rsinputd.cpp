@@ -3,12 +3,14 @@
 #include "ayn/controller_profile.h"
 #include "ayn/controller_profile_adapter.h"
 #include "ayn/rsinput_combo.h"
+#include "ayn/rsinput_listeners.h"
 #include "ayn/rsinput_mapping.h"
 #include "ayn/rsinput_lifecycle.h"
 #include "ayn/rsinput_parser.h"
 #include "ayn/rsinput_uart.h"
 
 #include <aidl/com/ayn/controller/BnOdinController.h>
+#include <aidl/com/ayn/controller/IOdinControllerListener.h>
 #include <aidl/com/ayn/controller/ControllerProfileResponse.h>
 #include <android-base/logging.h>
 #include <android-base/properties.h>
@@ -56,9 +58,12 @@ constexpr char kControllerServiceName[] =
 
 volatile sig_atomic_t g_stop_requested = 0;
 
+class OdinControllerBinder;
+
 struct RuntimeContext {
   std::string product_device;
   ayn::rsinput::ControllerProfileService* profile_service = nullptr;
+  OdinControllerBinder* controller_binder = nullptr;
 };
 
 int32_t AidlProfile(ayn::rsinput::ControllerProfile profile) {
@@ -78,11 +83,75 @@ int32_t AidlProfileResult(ayn::rsinput::ControllerProfileResult result) {
   return aidl_response;
 }
 
+// Dropped when a listener's process dies, so an app that crashes does not
+// leave the daemon holding a reference and calling into nothing.
+void OnListenerDied(void* cookie);
+
 class OdinControllerBinder final
     : public ::aidl::com::ayn::controller::BnOdinController {
  public:
   explicit OdinControllerBinder(ayn::rsinput::ControllerProfileService* core)
-      : core_(core) {}
+      : core_(core),
+        death_(AIBinder_DeathRecipient_new(OnListenerDied)) {}
+
+  ~OdinControllerBinder() override {
+    AIBinder_DeathRecipient_delete(death_);
+  }
+
+  ::ndk::ScopedAStatus registerListener(
+      const std::shared_ptr<
+          ::aidl::com::ayn::controller::IOdinControllerListener>& listener)
+      override {
+    if (listener == nullptr) {
+      return ::ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
+    }
+    AIBinder* binder = listener->asBinder().get();
+    if (!listeners_.Add(binder)) {
+      // Already registered. Taking a second reference would leak one.
+      return ::ndk::ScopedAStatus::ok();
+    }
+    AIBinder_incStrong(binder);
+    AIBinder_linkToDeath(binder, death_, binder);
+    return ::ndk::ScopedAStatus::ok();
+  }
+
+  ::ndk::ScopedAStatus unregisterListener(
+      const std::shared_ptr<
+          ::aidl::com::ayn::controller::IOdinControllerListener>& listener)
+      override {
+    if (listener == nullptr) {
+      return ::ndk::ScopedAStatus::fromExceptionCode(EX_NULL_POINTER);
+    }
+    Forget(listener->asBinder().get());
+    return ::ndk::ScopedAStatus::ok();
+  }
+
+  // Called from the UART reader thread. oneway, so a listener that is slow or
+  // wedged cannot hold up the pad.
+  void NotifyOverlayChord() {
+    listeners_.NotifyAll(
+        [](void*, void* listener) {
+          auto* binder = static_cast<AIBinder*>(listener);
+          // SpAIBinder takes ownership of the reference it is handed, and the
+          // registry's own reference has to outlive this call, so one is added
+          // for it to consume.
+          AIBinder_incStrong(binder);
+          auto proxy = ::aidl::com::ayn::controller::IOdinControllerListener::
+              fromBinder(::ndk::SpAIBinder(binder));
+          if (proxy != nullptr) {
+            proxy->onOverlayChord();
+          }
+        },
+        nullptr);
+  }
+
+  void Forget(AIBinder* binder) {
+    if (!listeners_.Remove(binder)) {
+      return;
+    }
+    AIBinder_unlinkToDeath(binder, death_, binder);
+    AIBinder_decStrong(binder);
+  }
 
   ::ndk::ScopedAStatus getProfile(
       ::aidl::com::ayn::controller::ControllerProfileResponse* response)
@@ -102,7 +171,18 @@ class OdinControllerBinder final
 
  private:
   ayn::rsinput::ControllerProfileService* const core_;
+  AIBinder_DeathRecipient* const death_;
+  ayn::rsinput::ListenerRegistry listeners_;
 };
+
+// The single registered service, so a death notification can reach it.
+OdinControllerBinder* g_controller_binder = nullptr;
+
+void OnListenerDied(void* cookie) {
+  if (g_controller_binder != nullptr) {
+    g_controller_binder->Forget(static_cast<AIBinder*>(cookie));
+  }
+}
 
 void RequestStop(int) {
   g_stop_requested = 1;
@@ -457,6 +537,7 @@ struct EventEmitter {
   bool failed = false;
   ayn::rsinput::ComboDetector overlay_combo;
   uint32_t overlay_requests = 0;
+  OdinControllerBinder* controller_binder = nullptr;
 };
 
 void EmitStatus(void* context, const ayn::rsinput::Status& status) {
@@ -472,8 +553,15 @@ void EmitStatus(void* context, const ayn::rsinput::Status& status) {
   ayn::rsinput::Status filtered = status;
   filtered.buttons = emitter->overlay_combo.Filter(status.buttons);
   if (emitter->overlay_combo.fired()) {
-    // A counter rather than a flag, so two presses in a row are two events and
-    // the reader cannot miss one by sampling at the wrong moment.
+    // The binder callback is the transport: SystemProperties change callbacks
+    // were tried first and never delivered to the app, verified with the app
+    // awake and unfrozen.
+    if (emitter->controller_binder != nullptr) {
+      emitter->controller_binder->NotifyOverlayChord();
+    }
+    // The property stays as the daemon's own record, so "did rsinputd see the
+    // chord" can be answered with getprop without involving the app at all.
+    // A counter rather than a flag, so two presses are two events.
     ++emitter->overlay_requests;
     android::base::SetProperty(kOverlayRequestProperty,
                                std::to_string(emitter->overlay_requests));
@@ -500,6 +588,7 @@ ayn::rsinput::StartupResult ForwardStatusFrames(void* context, int uart_fd,
     return ayn::rsinput::StartupResult::kFailed;
   }
   EventEmitter emitter{uinput_fd, runtime->profile_service};
+  emitter.controller_binder = runtime->controller_binder;
   ayn::rsinput::RuntimeStreamWatchdog stream_watchdog(
       kRuntimeStatusIdleTimeoutMs);
   std::array<uint8_t, 256> buffer{};
@@ -657,6 +746,12 @@ int RunSupportedDevice(void* context) {
   }
   LOG(INFO) << "registered " << kControllerServiceName;
   runtime->profile_service = profile_service.get();
+  // The chord notification goes out from the UART reader thread, so it needs
+  // the same service the app registers against. g_controller_binder is what a
+  // death notification uses to find it again, since the callback carries only
+  // the dead binder as its cookie.
+  runtime->controller_binder = binder.get();
+  g_controller_binder = binder.get();
 
   const ayn::rsinput::LifecycleCallbacks callbacks = {
       StopWasRequested,       LeaveRuntimeMcuPowerUnchanged,
@@ -668,6 +763,8 @@ int RunSupportedDevice(void* context) {
   const ayn::rsinput::StartupResult result = ayn::rsinput::RunReconnectLoop(
       callbacks, {kInitialRetryDelayMs, kMaxRetryDelayMs});
   runtime->profile_service = nullptr;
+  runtime->controller_binder = nullptr;
+  g_controller_binder = nullptr;
   return result == ayn::rsinput::StartupResult::kStopped ? EXIT_SUCCESS
                                                          : EXIT_FAILURE;
 }
