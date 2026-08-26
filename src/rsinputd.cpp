@@ -2,6 +2,7 @@
 
 #include "ayn/controller_profile.h"
 #include "ayn/controller_profile_adapter.h"
+#include "ayn/rsinput_combo.h"
 #include "ayn/rsinput_mapping.h"
 #include "ayn/rsinput_lifecycle.h"
 #include "ayn/rsinput_parser.h"
@@ -35,6 +36,10 @@
 #include <string>
 
 namespace {
+
+// Bumped once per overlay chord. GameAssistant watches it; nothing else may
+// write it, which the property's own SELinux type enforces.
+constexpr char kOverlayRequestProperty[] = "sys.odin.overlay_request";
 
 constexpr char kUartPath[] = "/dev/ttyHS1";
 constexpr char kUinputPath[] = "/dev/uinput";
@@ -450,6 +455,8 @@ struct EventEmitter {
   int uinput_fd;
   ayn::rsinput::ControllerProfileService* profile_service;
   bool failed = false;
+  ayn::rsinput::ComboDetector overlay_combo;
+  uint32_t overlay_requests = 0;
 };
 
 void EmitStatus(void* context, const ayn::rsinput::Status& status) {
@@ -457,7 +464,22 @@ void EmitStatus(void* context, const ayn::rsinput::Status& status) {
   if (emitter->failed) {
     return;
   }
-  const auto events = emitter->profile_service->MapStatusToEvents(status);
+
+  // The overlay chord is recognised and swallowed before anything is emitted,
+  // so the buttons that open a menu never reach the game underneath. This is
+  // the only place on the device that can do it: an app cannot grab a global
+  // chord without becoming an accessibility service.
+  ayn::rsinput::Status filtered = status;
+  filtered.buttons = emitter->overlay_combo.Filter(status.buttons);
+  if (emitter->overlay_combo.fired()) {
+    // A counter rather than a flag, so two presses in a row are two events and
+    // the reader cannot miss one by sampling at the wrong moment.
+    ++emitter->overlay_requests;
+    android::base::SetProperty(kOverlayRequestProperty,
+                               std::to_string(emitter->overlay_requests));
+  }
+
+  const auto events = emitter->profile_service->MapStatusToEvents(filtered);
   for (const ayn::rsinput::InputEvent& event : events) {
     input_event linux_event{};
     linux_event.type = event.type;

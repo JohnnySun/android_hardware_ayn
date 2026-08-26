@@ -82,6 +82,7 @@ cc_library_static {
 cc_library_static {
     name: "libayn_rsinputd_core",
     srcs: [
+        "src/rsinput_combo.cpp",
         "src/controller_profile.cpp",
         "src/rsinput_mapping.cpp",
         "src/rsinput_lifecycle.cpp",
