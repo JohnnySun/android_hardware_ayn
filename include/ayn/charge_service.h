@@ -42,6 +42,15 @@ using StateWriter = bool (*)(void* context, const std::string& value);
 std::string SerialiseMode(ChargeMode mode);
 bool ParseMode(const std::string& raw, ChargeMode* mode);
 
+// The stored state is the mode on its own line, optionally followed by a line
+// holding the stop and resume percentages. A file written before thresholds
+// were settable holds only the mode, and reads back with the defaults, which is
+// why the format grew a second line instead of changing the first.
+std::string SerialiseState(ChargeMode mode, int stop_percent,
+                           int resume_percent);
+bool ParseState(const std::string& raw, ChargeMode* mode, int* stop_percent,
+                int* resume_percent);
+
 class ChargeService {
  public:
   ChargeService(std::string product_device, SysfsPaths paths,
@@ -55,6 +64,9 @@ class ChargeService {
   ServiceResponse Start();
   ServiceResponse GetStatus();
   ServiceResponse SetMode(ChargeMode mode);
+  // Refused whole if the pair does not satisfy AreValidSettings, so a bad
+  // threshold can never be half applied.
+  ServiceResponse SetThresholds(int stop_percent, int resume_percent);
   // One pass of the policy against the current capacity.
   ServiceResponse Refresh();
   // Releases the restriction whatever the mode says. For shutdown.
@@ -76,6 +88,8 @@ class ChargeService {
   void* const state_writer_context_;
 
   ChargeMode mode_ = ChargeMode::kLimit;
+  int stop_percent_ = kDefaultStopPercent;
+  int resume_percent_ = kDefaultResumePercent;
   std::mutex mutex_;
 };
 

@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "ayn/charge_service.h"
 
+#include <cstdio>
+#include <string>
 #include <utility>
 
 namespace ayn::charge {
 namespace {
 
-LimitSettings SettingsFor(ChargeMode mode) {
-  return {mode, kDefaultStopPercent, kDefaultResumePercent};
+LimitSettings SettingsFor(ChargeMode mode, int stop_percent,
+                          int resume_percent) {
+  return {mode, stop_percent, resume_percent};
 }
 
 }  // namespace
@@ -22,6 +25,44 @@ std::string SerialiseMode(ChargeMode mode) {
       return "bypass";
   }
   return "limit";
+}
+
+std::string SerialiseState(ChargeMode mode, int stop_percent,
+                           int resume_percent) {
+  return SerialiseMode(mode) + "\n" + std::to_string(stop_percent) + " " +
+         std::to_string(resume_percent) + "\n";
+}
+
+bool ParseState(const std::string& raw, ChargeMode* mode, int* stop_percent,
+                int* resume_percent) {
+  if (mode == nullptr || stop_percent == nullptr || resume_percent == nullptr) {
+    return false;
+  }
+  const size_t newline = raw.find('\n');
+  if (!ParseMode(raw.substr(0, newline), mode)) {
+    return false;
+  }
+  // Thresholds are optional. A file from before they were settable holds only
+  // the mode, and anything that does not parse cleanly is treated the same way
+  // rather than half applied.
+  *stop_percent = kDefaultStopPercent;
+  *resume_percent = kDefaultResumePercent;
+  if (newline == std::string::npos) {
+    return true;
+  }
+  int stop = 0;
+  int resume = 0;
+  const std::string rest = raw.substr(newline + 1);
+  const size_t consumed = std::sscanf(rest.c_str(), "%d %d", &stop, &resume);
+  if (consumed != 2) {
+    return true;
+  }
+  if (!AreValidSettings({*mode, stop, resume})) {
+    return true;
+  }
+  *stop_percent = stop;
+  *resume_percent = resume;
+  return true;
 }
 
 bool ParseMode(const std::string& raw, ChargeMode* mode) {
@@ -83,8 +124,8 @@ ServiceResponse ChargeService::SnapshotLocked(ServiceResult result) {
 
   if (capacity_ok && restricted_ok) {
     response.snapshot_valid = true;
-    response.snapshot = {mode_, capacity, restricted, kDefaultStopPercent,
-                         kDefaultResumePercent};
+    response.snapshot = {mode_, capacity, restricted, stop_percent_,
+                         resume_percent_};
   }
   return response;
 }
@@ -99,7 +140,8 @@ ServiceResponse ChargeService::ApplyLocked() {
 
   auto stop_never = [](void*) { return false; };
   const ApplyResult applied = ApplyOnceUnlessStopped(
-      product_device_, paths_, SettingsFor(mode_), stop_never, nullptr,
+      product_device_, paths_,
+      SettingsFor(mode_, stop_percent_, resume_percent_), stop_never, nullptr,
       read_file_, reader_context_, write_file_, writer_context_);
 
   switch (applied) {
@@ -118,10 +160,14 @@ ServiceResponse ChargeService::Start() {
   std::lock_guard<std::mutex> guard(mutex_);
   std::string stored;
   ChargeMode parsed = ChargeMode::kLimit;
+  int stop = kDefaultStopPercent;
+  int resume = kDefaultResumePercent;
   if (read_state_ != nullptr &&
       read_state_(state_reader_context_, &stored) &&
-      ParseMode(stored, &parsed)) {
+      ParseState(stored, &parsed, &stop, &resume)) {
     mode_ = parsed;
+    stop_percent_ = stop;
+    resume_percent_ = resume;
   }
   return ApplyLocked();
 }
@@ -146,7 +192,33 @@ ServiceResponse ChargeService::SetMode(ChargeMode mode) {
   // Persisting after the charger agreed keeps a stored mode the hardware
   // refused from coming back on the next boot.
   if (write_state_ != nullptr) {
-    write_state_(state_writer_context_, SerialiseMode(mode_));
+    write_state_(state_writer_context_,
+                 SerialiseState(mode_, stop_percent_, resume_percent_));
+  }
+  return response;
+}
+
+ServiceResponse ChargeService::SetThresholds(int stop_percent,
+                                             int resume_percent) {
+  std::lock_guard<std::mutex> guard(mutex_);
+  // Validated as a pair against the mode that will use them, so a stop the
+  // policy would refuse never reaches the charger and never reaches the file.
+  if (!AreValidSettings({mode_, stop_percent, resume_percent})) {
+    return SnapshotLocked(ServiceResult::kInvalidMode);
+  }
+  const int previous_stop = stop_percent_;
+  const int previous_resume = resume_percent_;
+  stop_percent_ = stop_percent;
+  resume_percent_ = resume_percent;
+  const ServiceResponse response = ApplyLocked();
+  if (response.result != ServiceResult::kOk) {
+    stop_percent_ = previous_stop;
+    resume_percent_ = previous_resume;
+    return response;
+  }
+  if (write_state_ != nullptr) {
+    write_state_(state_writer_context_,
+                 SerialiseState(mode_, stop_percent_, resume_percent_));
   }
   return response;
 }

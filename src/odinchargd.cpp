@@ -161,6 +161,15 @@ class OdinChargeBinder : public ::aidl::com::ayn::charge::BnOdinCharge {
     return ::ndk::ScopedAStatus::ok();
   }
 
+  ::ndk::ScopedAStatus setThresholds(
+      int32_t stop_percent, int32_t resume_percent,
+      ::aidl::com::ayn::charge::ChargeResponse* out) override {
+    // The core validates the pair against the policy and refuses it whole, so
+    // there is nothing to pre-check here that would not duplicate that.
+    *out = ToAidl(core_->SetThresholds(stop_percent, resume_percent));
+    return ::ndk::ScopedAStatus::ok();
+  }
+
  private:
   ayn::charge::ChargeService* const core_;
 };

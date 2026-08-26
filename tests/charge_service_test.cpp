@@ -129,6 +129,64 @@ void SettingOffReleasesImmediately() {
   CHECK(!h.Restricted());
 }
 
+void ThresholdsAreSettableAndSurviveARestart() {
+  Harness h;
+  ChargeService s = Make(h);
+  CHECK(s.Start().result == ServiceResult::kOk);
+  // What the row shows has to be what the policy uses, or the UI reports a
+  // limit the charger is not working to.
+  CHECK(s.GetStatus().snapshot.stop_percent == ayn::charge::kDefaultStopPercent);
+
+  CHECK(s.SetThresholds(90, 85).result == ServiceResult::kOk);
+  const ServiceResponse after = s.GetStatus();
+  CHECK(after.snapshot.stop_percent == 90);
+  CHECK(after.snapshot.resume_percent == 85);
+
+  // A fresh service reading the same stored state comes back to the same pair.
+  ChargeService restarted = Make(h);
+  const ServiceResponse resumed = restarted.Start();
+  CHECK(resumed.result == ServiceResult::kOk);
+  CHECK(resumed.snapshot.stop_percent == 90);
+  CHECK(resumed.snapshot.resume_percent == 85);
+}
+
+void AStateFileWrittenBeforeThresholdsExistedStillReads() {
+  // The mode on its own, which is every file written until now.
+  Harness h;
+  h.stored = "bypass\n";
+  h.has_stored = true;
+  ChargeService s = Make(h);
+  const ServiceResponse r = s.Start();
+  CHECK(r.result == ServiceResult::kOk);
+  CHECK(r.mode == ChargeMode::kBypass);
+  CHECK(r.snapshot.stop_percent == ayn::charge::kDefaultStopPercent);
+  CHECK(r.snapshot.resume_percent == ayn::charge::kDefaultResumePercent);
+}
+
+void ThresholdsThePolicyRefusesNeverReachTheChargerOrTheFile() {
+  Harness h;
+  ChargeService s = Make(h);
+  CHECK(s.Start().result == ServiceResult::kOk);
+  const int writes = h.state_writes;
+
+  struct Bad { int stop; int resume; };
+  const Bad refused[] = {
+      {40, 35},    // below the minimum stop
+      {100, 95},   // above the maximum stop
+      {80, 79},    // less hysteresis than the band needs
+      {80, 30},    // resume under the floor that always releases
+      {70, 80},    // resume above stop
+  };
+  for (const Bad& bad : refused) {
+    CHECK(s.SetThresholds(bad.stop, bad.resume).result ==
+          ServiceResult::kInvalidMode);
+  }
+  CHECK(h.state_writes == writes);
+  const ServiceResponse unchanged = s.GetStatus();
+  CHECK(unchanged.snapshot.stop_percent == ayn::charge::kDefaultStopPercent);
+  CHECK(unchanged.snapshot.resume_percent == ayn::charge::kDefaultResumePercent);
+}
+
 void AModeIsPersistedOnlyAfterTheChargerAgrees() {
   Harness h;
   ChargeService s = Make(h);
@@ -207,6 +265,12 @@ int main() {
       {"setting off releases immediately", SettingOffReleasesImmediately},
       {"a mode is persisted only after the charger agrees",
        AModeIsPersistedOnlyAfterTheChargerAgrees},
+      {"thresholds are settable and survive a restart",
+       ThresholdsAreSettableAndSurviveARestart},
+      {"a state file written before thresholds existed still reads",
+       AStateFileWrittenBeforeThresholdsExistedStillReads},
+      {"thresholds the policy refuses never reach the charger or the file",
+       ThresholdsThePolicyRefusesNeverReachTheChargerOrTheFile},
       {"an unknown mode is refused", AnUnknownModeIsRefused},
       {"an unknown device never writes", AnUnknownDeviceNeverWrites},
       {"status reports what the charger actually shows",
